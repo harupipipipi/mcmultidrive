@@ -4,9 +4,16 @@ import os
 import re
 import time
 
-E4MC_DOMAIN_PATTERN = re.compile(
-    r"Local game hosted on domain \[([^\]]+\.e4mc\.link)\]"
-)
+E4MC_DOMAIN_PATTERNS = [
+    # v5.x+: "Local game hosted on domain [xxx.e4mc.link]"
+    re.compile(r"Local game hosted on domain \[([^\]]+\.e4mc\.link)\]"),
+    # v4.x / older: "e4mc delegated to xxx.e4mc.link"
+    re.compile(r"e4mc delegated to ([^\s]+\.e4mc\.link)"),
+    # Variant: "Domain assigned: xxx.e4mc.link"
+    re.compile(r"[Dd]omain assigned:?\s*([^\s]+\.e4mc\.link)"),
+    # Broad fallback: any line containing xxx.e4mc.link
+    re.compile(r"([a-zA-Z0-9\-]+(?:\.[a-zA-Z0-9\-]+)*\.e4mc\.link)"),
+]
 
 
 def watch_for_domain(log_path: str, timeout_seconds: int = 120) -> str | None:
@@ -58,11 +65,12 @@ def watch_for_domain(log_path: str, timeout_seconds: int = 120) -> str | None:
                 last_read_pos = f.tell()
 
             for line in new_content.splitlines():
-                match = E4MC_DOMAIN_PATTERN.search(line)
-                if match:
-                    domain = match.group(1)
-                    print(f"[ログ監視] e4mc ドメインを検出: {domain}")
-                    return domain
+                for pattern in E4MC_DOMAIN_PATTERNS:
+                    match = pattern.search(line)
+                    if match:
+                        domain = match.group(1)
+                        print(f"[ログ監視] e4mc ドメインを検出: {domain}")
+                        return domain
 
         except OSError:
             pass

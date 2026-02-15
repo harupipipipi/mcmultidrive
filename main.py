@@ -20,10 +20,11 @@ from modules.config_mgr import (
 )
 from modules.status_mgr import (
     list_worlds, get_status, set_online, update_domain,
-    set_offline, add_world, is_lock_expired,
+    set_offline, add_world, is_lock_expired, delete_world,
 )
 from modules.world_sync import (
     download_world, upload_world, create_backup, check_remote_world_exists,
+    archive_world,
 )
 from modules.nbt_editor import fix_level_dat, update_servers_dat
 from modules.log_watcher import watch_for_domain
@@ -191,6 +192,77 @@ def _ask_new_world(gas_url: str, base: str) -> str | None:
     return result
 
 
+# ─── ドメイン手動入力ダイアログ ────────────────────
+
+def _ask_domain_manual(world_name: str) -> str | None:
+    layout = [
+        [sg.Text(f"ワールド「{world_name}」のドメインを入力",
+                 font=("Helvetica", 12, "bold"))],
+        [sg.HorizontalSeparator()],
+        [sg.Text("")],
+        [sg.Text("e4mcドメインの自動検出に失敗しました。\n"
+                 "Minecraftのログからドメインをコピーして貼り付けてください。\n"
+                 "（例: brave-sunset.sg.e4mc.link）",
+                 font=("Helvetica", 9))],
+        [sg.Text("")],
+        [sg.Input(key="-DOMAIN-", size=(45, 1))],
+        [sg.Text("")],
+        [sg.Button("OK", key="-OK-", size=(10, 1)),
+         sg.Button("スキップ", key="-SKIP-", size=(10, 1))],
+    ]
+    win = sg.Window(f"ドメイン入力 - {world_name}", layout,
+                    finalize=True, modal=True)
+    result = None
+    while True:
+        event, values = win.read()
+        if event in (sg.WIN_CLOSED, "-SKIP-"):
+            break
+        if event == "-OK-":
+            d = values["-DOMAIN-"].strip()
+            if d:
+                result = d
+                break
+            sg.popup_error("ドメインを入力してください。", title="エラー")
+    win.close()
+    return result
+
+
+# ─── ドメイン手動入力ダイアログ ────────────────────
+
+def _ask_domain_manual(world_name: str) -> str | None:
+    layout = [
+        [sg.Text(f"ワールド「{world_name}」のドメインを入力",
+                 font=("Helvetica", 12, "bold"))],
+        [sg.HorizontalSeparator()],
+        [sg.Text("")],
+        [sg.Text("e4mcドメインの自動検出に失敗しました。\n"
+                 "Minecraftのチャット欄に表示されたドメインを\n"
+                 "コピーして貼り付けてください。\n"
+                 "（例: brave-sunset.sg.e4mc.link）",
+                 font=("Helvetica", 9))],
+        [sg.Text("")],
+        [sg.Input(key="-DOMAIN-", size=(45, 1))],
+        [sg.Text("")],
+        [sg.Button("OK", key="-OK-", size=(10, 1)),
+         sg.Button("スキップ", key="-SKIP-", size=(10, 1))],
+    ]
+    win = sg.Window(f"ドメイン入力 - {world_name}", layout,
+                    finalize=True, modal=True)
+    result = None
+    while True:
+        event, values = win.read()
+        if event in (sg.WIN_CLOSED, "-SKIP-"):
+            break
+        if event == "-OK-":
+            d = values["-DOMAIN-"].strip()
+            if d:
+                result = d
+                break
+            sg.popup_error("ドメインを入力してください。", title="エラー")
+    win.close()
+    return result
+
+
 # ─── 設定画面 ────────────────────────────────────
 
 def _show_settings(base: str, worlds: list[dict]) -> None:
@@ -292,6 +364,10 @@ def _make_layout(worlds: list[dict], player_name: str) -> list:
          sg.Button("savesを開く", key="-OPEN-SAVES-", size=(12, 1))],
         [sg.Button("手動UL", key="-UPLOAD-", size=(12, 1)),
          sg.Button("手動DL", key="-DOWNLOAD-", size=(12, 1))],
+        [sg.Button("削除", key="-DELETE-WORLD-", size=(12, 1),
+                   button_color=("white", "firebrick"))],
+        [sg.Button("削除", key="-DELETE-WORLD-", size=(12, 1),
+                   button_color=("white", "firebrick"))],
     ]
 
     layout = [
@@ -453,12 +529,55 @@ def _host_thread(window: sg.Window, config: dict) -> None:
             _clipboard_copy(domain)
             send(f"ドメインをクリップボードにコピーしました。")
         else:
-            send("[警告] e4mc ドメインが検出できませんでした。")
+            send("[警告] e4mc ドメインが自動検出できませんでした。")
+            send("手動入力ダイアログを表示します...")
+            window.write_event_value("-ASK-DOMAIN-", world_name)
+            # メインスレッドからの応答を待つ（最大120秒）
+            import time as _time
+            _deadline = _time.time() + 120
+            domain = None
+            while _time.time() < _deadline:
+                # _host_thread_domain に値がセットされるのを待つ
+                if hasattr(_host_thread, '_manual_domain'):
+                    domain = _host_thread._manual_domain
+                    del _host_thread._manual_domain
+                    break
+                _time.sleep(0.5)
+            if domain:
+                send(f"[手動入力] ドメイン: {domain}")
+                update_domain(gas_url, world_name, domain)
+                _clipboard_copy(domain)
+                send(f"ドメインをクリップボードにコピーしました。")
+            else:
+                send("[警告] ドメインが設定されませんでした。")
 
-        send("Minecraft の終了を待機中...")
+        send("Minecraft の終了を待機中（10分ごとに自動保存）...")
         pid = find_minecraft_process()
         if pid:
-            wait_for_exit(pid)
+            import time as _time
+            AUTOSAVE_INTERVAL = 600  # 10分
+            last_save = _time.time()
+            while True:
+                try:
+                    import psutil as _psutil
+                    proc = _psutil.Process(pid)
+                    if not proc.is_running() or proc.status() == _psutil.STATUS_ZOMBIE:
+                        break
+                except _psutil.NoSuchProcess:
+                    break
+                except Exception:
+                    break
+
+                if _time.time() - last_save >= AUTOSAVE_INTERVAL:
+                    send(f"[自動保存] {world_name} をアップロード中...")
+                    upload_world(config)
+                    last_save = _time.time()
+                    send(f"[自動保存] 完了")
+
+                _time.sleep(3)
+
+            send("[プロセス] Minecraft が終了しました。")
+            _time.sleep(3)
         else:
             send("[情報] Minecraft プロセスが見つかりません。手動ULしてください。")
             window.write_event_value("-HOST-DONE-", True)
@@ -600,6 +719,16 @@ def main():
             worlds = list_worlds(gas_url)
             items = [_world_display(w) for w in worlds]
             window["-WLIST-"].update(items)
+
+        if event == "-ASK-DOMAIN-":
+            wn = values["-ASK-DOMAIN-"]
+            manual_domain = _ask_domain_manual(wn)
+            _host_thread._manual_domain = manual_domain
+
+        if event == "-ASK-DOMAIN-":
+            wn = values["-ASK-DOMAIN-"]
+            manual_domain = _ask_domain_manual(wn)
+            _host_thread._manual_domain = manual_domain
 
         if event == "-HOST-LOCK-EXPIRED-":
             info = values["-HOST-LOCK-EXPIRED-"]

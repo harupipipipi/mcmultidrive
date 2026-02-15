@@ -94,6 +94,8 @@ function doPost(e) {
       return updateDomain(sheet, data);
     case "add_world":
       return addWorld(sheet, data);
+    case "delete_world":
+      return deleteWorld(sheet, data);
     default:
       return jsonResponse({success: false, error: "unknown action"});
   }
@@ -184,5 +186,27 @@ function addWorld(sheet, data) {
   sheet.getRange(lastRow + 1, 1).setValue(world);
   sheet.getRange(lastRow + 1, 2).setValue("offline");
 
+  return jsonResponse({success: true});
+}
+
+
+function deleteWorld(sheet, data) {
+  var world = data.world || "";
+  if (!world) {
+    return jsonResponse({success: false, error: "missing world"});
+  }
+
+  var row = findRow(sheet, world);
+  if (row === -1) {
+    return jsonResponse({success: false, error: "world not found"});
+  }
+
+  // ステータスがオンラインなら削除不可
+  var status = sheet.getRange(row, 2).getValue();
+  if (status === "online") {
+    return jsonResponse({success: false, error: "cannot delete online world"});
+  }
+
+  sheet.deleteRow(row);
   return jsonResponse({success: true});
 }

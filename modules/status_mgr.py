@@ -91,3 +91,10 @@ def is_lock_expired(lock_timestamp: str, timeout_hours: int) -> bool:
         return elapsed_hours > timeout_hours
     except (ValueError, TypeError):
         return True
+
+
+def delete_world(gas_url: str, world_name: str) -> bool:
+    """ワールドをGASから削除（ステータスシートから行を消す）"""
+    payload = {"action": "delete_world", "world": world_name}
+    data = _post(gas_url, payload)
+    return data.get("success", False)

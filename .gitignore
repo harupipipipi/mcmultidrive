@@ -12,3 +12,5 @@ build/
 .venv/
 MCMultiDrive.exe
 config.json
+my_settings.json
+shared_config.json

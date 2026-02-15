@@ -149,3 +149,29 @@ def _cleanup_old_backups(config: dict, max_generations: int) -> None:
             )
     except Exception as e:
         print(f"[警告] バックアップのクリーンアップに失敗: {e}")
+
+
+def archive_world(config: dict) -> bool:
+    """ワールドをworlds/からbackups/{world_name}_archived/に移動"""
+    remote_name = config["rclone_remote_name"]
+    world_name = config["world_name"]
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
+    src = f"{remote_name}:worlds/{world_name}"
+    dst = f"{remote_name}:backups/{world_name}_archived_{timestamp}"
+
+    print(f"\n[アーカイブ] {world_name} を backups に移動中...")
+
+    # まずコピー
+    success = _run_rclone(config, ["copy", src, dst], show_progress=False)
+    if not success:
+        print("[エラー] アーカイブのコピーに失敗しました。")
+        return False
+
+    # 元を削除
+    success = _run_rclone(config, ["purge", src], show_progress=False)
+    if not success:
+        print("[警告] 元フォルダの削除に失敗しました。手動で削除してください。")
+
+    print(f"[アーカイブ] 完了: backups/{world_name}_archived_{timestamp}")
+    return True
