@@ -1,4 +1,4 @@
-"""ATM10 Session Manager — GUI版エントリポイント (FreeSimpleGUI)"""
+"""ATM10 Session Manager — GUI版 (FreeSimpleGUI) / exe配布対応"""
 
 import os
 import sys
@@ -14,7 +14,10 @@ except ImportError:
 
 import FreeSimpleGUI as sg
 
-from modules.config_mgr import load_config, print_config
+from modules.config_mgr import (
+    _find_base, load_shared, load_personal, save_personal,
+    build_config, print_config,
+)
 from modules.status_mgr import (
     get_status, set_online, update_domain, set_offline, is_lock_expired,
 )
@@ -27,11 +30,88 @@ from modules.process_monitor import find_minecraft_process, wait_for_exit
 
 
 # ---------------------------------------------------------------------------
+# 初回セットアップウィザード
+# ---------------------------------------------------------------------------
+def _run_setup(base: str) -> dict | None:
+    personal = load_personal(base)
+    default_name = personal["player_name"] if personal else ""
+    default_path = personal["curseforge_instance_path"] if personal else ""
+
+    layout = [
+        [sg.Text("初回セットアップ", font=("Helvetica", 16, "bold"))],
+        [sg.HorizontalSeparator()],
+        [sg.Text("")],
+        [sg.Text("Minecraft のプレイヤー名を入力してください:")],
+        [sg.Input(default_name, key="-NAME-", size=(40, 1))],
+        [sg.Text("")],
+        [sg.Text("CurseForge の ATM10 インスタンスフォルダを選択してください:")],
+        [sg.Text("（CurseForge で ATM10 を右クリック → Open Folder で\n"
+                  " 開くフォルダと同じものを選んでください）",
+                  font=("Helvetica", 9))],
+        [sg.Input(default_path, key="-PATH-", size=(40, 1)),
+         sg.FolderBrowse("選択", target="-PATH-")],
+        [sg.Text("")],
+        [sg.Button("保存して開始", key="-SAVE-", size=(15, 1)),
+         sg.Button("キャンセル", key="-CANCEL-", size=(10, 1))],
+    ]
+
+    win = sg.Window("ATM10 Session Manager - セットアップ", layout,
+                     finalize=True, modal=True)
+
+    result = None
+    while True:
+        event, values = win.read()
+
+        if event in (sg.WIN_CLOSED, "-CANCEL-"):
+            break
+
+        if event == "-SAVE-":
+            name = values["-NAME-"].strip()
+            path = values["-PATH-"].strip()
+
+            if not name:
+                sg.popup_error("プレイヤー名を入力してください。", title="エラー")
+                continue
+            if not path or not os.path.isdir(path):
+                sg.popup_error(
+                    "有効なフォルダを選択してください。\n"
+                    "CurseForge で ATM10 を右クリック →\n"
+                    "Open Folder で開くフォルダを選んでください。",
+                    title="エラー",
+                )
+                continue
+
+            save_personal(name, path, base)
+            result = build_config(base)
+            break
+
+    win.close()
+    return result
+
+
+def _load_or_setup() -> dict | None:
+    base = _find_base()
+
+    try:
+        load_shared(base)
+    except (FileNotFoundError, ValueError) as e:
+        sg.popup_error(
+            f"共有設定ファイルのエラー:\n{e}\n\n"
+            "shared_config.json が exe と同じフォルダにあるか確認してください。",
+            title="起動エラー",
+        )
+        return None
+
+    config = build_config(base)
+    if config is None:
+        config = _run_setup(base)
+    return config
+
+
+# ---------------------------------------------------------------------------
 # stdout → GUI ログ転送
 # ---------------------------------------------------------------------------
 class _GUIWriter:
-    """sys.stdout を置き換え、print 出力を GUI ログに転送する。"""
-
     def __init__(self, window: sg.Window):
         self._window = window
         self._original = sys.stdout
@@ -62,7 +142,6 @@ def _clipboard_copy(text: str) -> None:
 
 
 def _open_folder(path: str) -> None:
-    """OS のファイルマネージャでフォルダを開く。"""
     if not os.path.isdir(path):
         sg.popup_error(f"フォルダが見つかりません:\n{path}", title="エラー")
         return
@@ -107,6 +186,8 @@ def _make_layout(status_str: str) -> list:
          sg.Button("手動ダウンロード", key="-DOWNLOAD-", size=(20, 1))],
         [sg.Button("saves フォルダを開く", key="-OPEN-SAVES-", size=(20, 1)),
          sg.Button("設定確認", key="-CONFIG-", size=(20, 1))],
+        [sg.Button("個人設定を変更", key="-RECONFIG-", size=(20, 1)),
+         sg.Push()],
         [sg.HorizontalSeparator()],
         [sg.Text("ログ:", font=("Helvetica", 10, "bold"))],
         [sg.Multiline(size=(62, 15), key="-LOG-", autoscroll=True,
@@ -242,7 +323,7 @@ def _host_thread(window: sg.Window, config: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 接続フロー (メインスレッドで実行 — 軽量なため)
+# 接続フロー
 # ---------------------------------------------------------------------------
 def _join_flow(window: sg.Window, config: dict) -> None:
     gas_url = config["gas_url"]
@@ -282,7 +363,7 @@ def _join_flow(window: sg.Window, config: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 手動アップロード (バックグラウンドスレッド)
+# 手動アップロード / ダウンロード (スレッド)
 # ---------------------------------------------------------------------------
 def _upload_thread(window: sg.Window, config: dict) -> None:
     def send(msg):
@@ -300,9 +381,6 @@ def _upload_thread(window: sg.Window, config: dict) -> None:
     window.write_event_value("-TASK-DONE-", None)
 
 
-# ---------------------------------------------------------------------------
-# 手動ダウンロード (バックグラウンドスレッド)
-# ---------------------------------------------------------------------------
 def _download_thread(window: sg.Window, config: dict) -> None:
     def send(msg):
         window.write_event_value("-PRINT-", msg)
@@ -318,10 +396,10 @@ def _download_thread(window: sg.Window, config: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ボタン有効/無効 一括切替
+# ボタン有効/無効
 # ---------------------------------------------------------------------------
 _BUTTONS = ("-HOST-", "-JOIN-", "-UPLOAD-", "-DOWNLOAD-",
-            "-OPEN-SAVES-", "-CONFIG-")
+            "-OPEN-SAVES-", "-CONFIG-", "-RECONFIG-")
 
 
 def _set_buttons(window: sg.Window, enabled: bool) -> None:
@@ -336,18 +414,11 @@ REFRESH_SEC = 30
 
 
 def main() -> None:
-    try:
-        config = load_config()
-    except SystemExit:
-        sg.theme("DarkGrey13")
-        sg.popup_error(
-            "設定ファイルの読み込みに失敗しました。\n"
-            "コンソール出力を確認してください。",
-            title="起動エラー",
-        )
-        return
-
     sg.theme("DarkGrey13")
+
+    config = _load_or_setup()
+    if config is None:
+        return
 
     status_info = get_status(config["gas_url"])
     layout = _make_layout(_status_text(status_info))
@@ -473,18 +544,22 @@ def main() -> None:
 
         # 設定確認
         if event == "-CONFIG-":
-            c = config
-            sg.popup(
-                f"インスタンスパス : {c['curseforge_instance_path']}\n"
-                f"ワールド名      : {c['world_name']}\n"
-                f"GAS URL         : {c['gas_url'][:60]}...\n"
-                f"rclone リモート : {c['rclone_remote_name']}\n"
-                f"Drive フォルダID: {c['rclone_drive_folder_id'][:20]}...\n"
-                f"プレイヤー名    : {c['player_name']}\n"
-                f"バックアップ世代: {c['backup_generations']}\n"
-                f"ロックタイムアウト: {c['lock_timeout_hours']} 時間",
-                title="現在の設定", font=("Consolas", 10),
-            )
+            sg.popup(print_config(config),
+                     title="現在の設定", font=("Consolas", 10))
+            continue
+
+        # 個人設定を変更
+        if event == "-RECONFIG-" and not busy:
+            base = _find_base()
+            new_config = _run_setup(base)
+            if new_config is not None:
+                config = new_config
+                _log(window, "[設定] 個人設定を更新しました。")
+                try:
+                    si = get_status(config["gas_url"])
+                    window["-STATUS-"].update(_status_text(si))
+                except Exception:
+                    pass
             continue
 
     sys.stdout = writer._original

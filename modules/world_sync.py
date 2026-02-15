@@ -21,7 +21,8 @@ def _run_rclone(config: dict, args: list[str], show_progress: bool = True) -> bo
     print(f"[rclone] 実行中: {' '.join(cmd)}")
 
     try:
-        result = subprocess.run(cmd, capture_output=not show_progress, text=True)
+        result = subprocess.run(cmd, capture_output=not show_progress, text=True,
+                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         if result.returncode != 0:
             if not show_progress and result.stderr:
                 print(f"[rclone エラー] {result.stderr.strip()}")
@@ -48,7 +49,8 @@ def check_remote_world_exists(config: dict) -> bool:
         "--max-depth", "1",
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
+                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         return result.returncode == 0 and result.stdout.strip() != ""
     except Exception:
         return False
@@ -106,7 +108,8 @@ def _cleanup_old_backups(config: dict, max_generations: int) -> None:
         "--dirs-only", "--max-depth", "1",
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
+                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         if result.returncode != 0:
             return
         dirs = sorted([d.strip().rstrip("/") for d in result.stdout.strip().split("\n") if d.strip()])
@@ -120,6 +123,7 @@ def _cleanup_old_backups(config: dict, max_generations: int) -> None:
                 "--config", rclone_conf,
                 "--drive-root-folder-id", folder_id,
             ]
-            subprocess.run(delete_cmd, capture_output=True, text=True, timeout=60)
+            subprocess.run(delete_cmd, capture_output=True, text=True, timeout=60,
+                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
     except Exception as e:
         print(f"[警告] バックアップのクリーンアップに失敗しました: {e}")

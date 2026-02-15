@@ -1,4 +1,5 @@
 config.json
+my_settings.json
 rclone.conf
 rclone/rclone.exe
 __pycache__/
@@ -10,3 +11,4 @@ dist/
 build/
 *.spec
 .venv/
+ATM10SessionManager.exe

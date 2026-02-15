@@ -1,81 +1,87 @@
-"""config_mgr.py - 設定ファイル読み込み・バリデーション"""
+"""config_mgr.py - 共有設定 + 個人設定の読み込み・バリデーション"""
 
 import json
 import os
 import sys
 
 
-REQUIRED_FIELDS = [
-    "curseforge_instance_path",
-    "world_name",
-    "gas_url",
-    "rclone_remote_name",
-    "rclone_drive_folder_id",
-    "rclone_exe_path",
-    "rclone_config_path",
-    "player_name",
-    "backup_generations",
-    "lock_timeout_hours",
+SHARED_FIELDS = [
+    "gas_url", "rclone_remote_name", "rclone_drive_folder_id",
+    "world_name", "backup_generations", "lock_timeout_hours",
 ]
+PERSONAL_FIELDS = ["player_name", "curseforge_instance_path"]
 
 
-def load_config(config_path: str = "config.json") -> dict:
-    if not os.path.exists(config_path):
-        print(f"[エラー] 設定ファイルが見つかりません: {config_path}")
-        print("config.json.example を config.json にコピーして編集してください。")
-        sys.exit(1)
+def _find_base() -> str:
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
-    except json.JSONDecodeError as e:
-        print(f"[エラー] config.json の JSON 形式が不正です: {e}")
-        sys.exit(1)
 
-    missing = [field for field in REQUIRED_FIELDS if field not in config]
+def load_shared(base: str = None) -> dict:
+    if base is None:
+        base = _find_base()
+    path = os.path.join(base, "shared_config.json")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"shared_config.json が見つかりません: {path}")
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    missing = [k for k in SHARED_FIELDS if k not in data]
     if missing:
-        print(f"[エラー] config.json に以下のフィールドがありません: {', '.join(missing)}")
-        sys.exit(1)
+        raise ValueError(f"shared_config.json にフィールドがありません: {', '.join(missing)}")
+    return data
 
-    str_fields = [
-        "curseforge_instance_path", "world_name", "gas_url",
-        "rclone_remote_name", "rclone_drive_folder_id",
-        "rclone_exe_path", "rclone_config_path", "player_name",
-    ]
-    for field in str_fields:
-        if not isinstance(config[field], str) or not config[field].strip():
-            print(f"[エラー] config.json の {field} は空でない文字列である必要があります。")
-            sys.exit(1)
 
-    int_fields = ["backup_generations", "lock_timeout_hours"]
-    for field in int_fields:
-        if not isinstance(config[field], int) or config[field] < 1:
-            print(f"[エラー] config.json の {field} は 1 以上の整数である必要があります。")
-            sys.exit(1)
+def load_personal(base: str = None) -> dict | None:
+    if base is None:
+        base = _find_base()
+    path = os.path.join(base, "my_settings.json")
+    if not os.path.exists(path):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    missing = [k for k in PERSONAL_FIELDS if k not in data]
+    if missing:
+        return None
+    return data
 
-    instance_path = config["curseforge_instance_path"]
-    if not os.path.isdir(instance_path):
-        print(f"[警告] CurseForge インスタンスフォルダが見つかりません: {instance_path}")
 
-    rclone_exe = config["rclone_exe_path"]
-    if not os.path.isfile(rclone_exe):
-        print(f"[警告] rclone.exe が見つかりません: {rclone_exe}")
+def save_personal(player_name: str, instance_path: str, base: str = None) -> str:
+    if base is None:
+        base = _find_base()
+    path = os.path.join(base, "my_settings.json")
+    data = {
+        "player_name": player_name,
+        "curseforge_instance_path": instance_path,
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    return path
 
-    rclone_conf = config["rclone_config_path"]
-    if not os.path.isfile(rclone_conf):
-        print(f"[警告] rclone.conf が見つかりません: {rclone_conf}")
 
+def build_config(base: str = None) -> dict:
+    if base is None:
+        base = _find_base()
+    shared = load_shared(base)
+    personal = load_personal(base)
+    if personal is None:
+        return None
+    config = {}
+    config.update(shared)
+    config.update(personal)
+    config["rclone_exe_path"] = os.path.join(base, "rclone", "rclone.exe")
+    config["rclone_config_path"] = os.path.join(base, "rclone.conf")
     return config
 
 
-def print_config(config: dict) -> None:
-    print("\n=== 現在の設定 ===")
-    print(f"  インスタンスパス  : {config['curseforge_instance_path']}")
-    print(f"  ワールド名       : {config['world_name']}")
-    print(f"  GAS URL          : {config['gas_url'][:60]}...")
-    print(f"  rclone リモート  : {config['rclone_remote_name']}")
-    print(f"  Drive フォルダID : {config['rclone_drive_folder_id'][:20]}...")
-    print(f"  プレイヤー名     : {config['player_name']}")
-    print(f"  バックアップ世代 : {config['backup_generations']}")
-    print(f"  ロックタイムアウト: {config['lock_timeout_hours']} 時間")
-    print()
+def print_config(config: dict) -> str:
+    return (
+        f"インスタンスパス : {config.get('curseforge_instance_path','')}\n"
+        f"ワールド名      : {config.get('world_name','')}\n"
+        f"GAS URL         : {config.get('gas_url','')[:60]}...\n"
+        f"rclone リモート : {config.get('rclone_remote_name','')}\n"
+        f"Drive フォルダID: {config.get('rclone_drive_folder_id','')[:20]}...\n"
+        f"プレイヤー名    : {config.get('player_name','')}\n"
+        f"バックアップ世代: {config.get('backup_generations','')}\n"
+        f"ロックタイムアウト: {config.get('lock_timeout_hours','')} 時間"
+    )

@@ -16,7 +16,7 @@ def watch_for_domain(log_path: str, timeout_seconds: int = 120) -> str | None:
     while not os.path.isfile(log_path):
         if time.time() - start_time > timeout_seconds:
             print(f"[エラー] latest.log が見つかりません: {log_path}")
-            print("config.json の curseforge_instance_path を確認してください。")
+            print("インスタンスパスを確認してください。")
             return None
         time.sleep(1)
 

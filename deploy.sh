@@ -10,6 +10,7 @@ mkdir -p modules rclone
 # --- .gitignore ---
 cat > .gitignore << 'EOF'
 config.json
+my_settings.json
 rclone.conf
 rclone/rclone.exe
 __pycache__/
@@ -21,6 +22,19 @@ dist/
 build/
 *.spec
 .venv/
+ATM10SessionManager.exe
+EOF
+
+# --- shared_config.json ---
+cat > shared_config.json << 'EOF'
+{
+  "gas_url": "https://script.google.com/macros/s/XXXXXXXXXXXX/exec",
+  "rclone_remote_name": "gdrive",
+  "rclone_drive_folder_id": "1DEFxyz_your_folder_id_here",
+  "world_name": "ATM10_Shared",
+  "backup_generations": 5,
+  "lock_timeout_hours": 8
+}
 EOF
 
 # --- requirements.txt ---
@@ -32,109 +46,99 @@ pyperclip
 FreeSimpleGUI
 EOF
 
-# --- config.json.example ---
-cat > config.json.example << 'EOF'
-{
-  "curseforge_instance_path": "C:\\Users\\YourName\\curseforge\\minecraft\\Instances\\All the Mods 10",
-  "world_name": "ATM10_Shared",
-  "gas_url": "https://script.google.com/macros/s/XXXXXXXXXXXX/exec",
-  "rclone_remote_name": "gdrive",
-  "rclone_drive_folder_id": "1DEFxyz_your_folder_id_here",
-  "rclone_exe_path": "./rclone/rclone.exe",
-  "rclone_config_path": "./rclone.conf",
-  "player_name": "MyPlayerName",
-  "backup_generations": 5,
-  "lock_timeout_hours": 8
-}
-EOF
-
 # --- modules/__init__.py ---
 cat > modules/__init__.py << 'EOF'
 EOF
 
 # --- modules/config_mgr.py ---
 cat > modules/config_mgr.py << 'PYEOF'
-"""config_mgr.py - 設定ファイル読み込み・バリデーション"""
+"""config_mgr.py - 共有設定 + 個人設定の読み込み・バリデーション"""
 
 import json
 import os
 import sys
 
 
-REQUIRED_FIELDS = [
-    "curseforge_instance_path",
-    "world_name",
-    "gas_url",
-    "rclone_remote_name",
-    "rclone_drive_folder_id",
-    "rclone_exe_path",
-    "rclone_config_path",
-    "player_name",
-    "backup_generations",
-    "lock_timeout_hours",
+SHARED_FIELDS = [
+    "gas_url", "rclone_remote_name", "rclone_drive_folder_id",
+    "world_name", "backup_generations", "lock_timeout_hours",
 ]
+PERSONAL_FIELDS = ["player_name", "curseforge_instance_path"]
 
 
-def load_config(config_path: str = "config.json") -> dict:
-    if not os.path.exists(config_path):
-        print(f"[エラー] 設定ファイルが見つかりません: {config_path}")
-        print("config.json.example を config.json にコピーして編集してください。")
-        sys.exit(1)
+def _find_base() -> str:
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
-    except json.JSONDecodeError as e:
-        print(f"[エラー] config.json の JSON 形式が不正です: {e}")
-        sys.exit(1)
 
-    missing = [field for field in REQUIRED_FIELDS if field not in config]
+def load_shared(base: str = None) -> dict:
+    if base is None:
+        base = _find_base()
+    path = os.path.join(base, "shared_config.json")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"shared_config.json が見つかりません: {path}")
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    missing = [k for k in SHARED_FIELDS if k not in data]
     if missing:
-        print(f"[エラー] config.json に以下のフィールドがありません: {', '.join(missing)}")
-        sys.exit(1)
+        raise ValueError(f"shared_config.json にフィールドがありません: {', '.join(missing)}")
+    return data
 
-    str_fields = [
-        "curseforge_instance_path", "world_name", "gas_url",
-        "rclone_remote_name", "rclone_drive_folder_id",
-        "rclone_exe_path", "rclone_config_path", "player_name",
-    ]
-    for field in str_fields:
-        if not isinstance(config[field], str) or not config[field].strip():
-            print(f"[エラー] config.json の {field} は空でない文字列である必要があります。")
-            sys.exit(1)
 
-    int_fields = ["backup_generations", "lock_timeout_hours"]
-    for field in int_fields:
-        if not isinstance(config[field], int) or config[field] < 1:
-            print(f"[エラー] config.json の {field} は 1 以上の整数である必要があります。")
-            sys.exit(1)
+def load_personal(base: str = None) -> dict | None:
+    if base is None:
+        base = _find_base()
+    path = os.path.join(base, "my_settings.json")
+    if not os.path.exists(path):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    missing = [k for k in PERSONAL_FIELDS if k not in data]
+    if missing:
+        return None
+    return data
 
-    instance_path = config["curseforge_instance_path"]
-    if not os.path.isdir(instance_path):
-        print(f"[警告] CurseForge インスタンスフォルダが見つかりません: {instance_path}")
 
-    rclone_exe = config["rclone_exe_path"]
-    if not os.path.isfile(rclone_exe):
-        print(f"[警告] rclone.exe が見つかりません: {rclone_exe}")
+def save_personal(player_name: str, instance_path: str, base: str = None) -> str:
+    if base is None:
+        base = _find_base()
+    path = os.path.join(base, "my_settings.json")
+    data = {
+        "player_name": player_name,
+        "curseforge_instance_path": instance_path,
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    return path
 
-    rclone_conf = config["rclone_config_path"]
-    if not os.path.isfile(rclone_conf):
-        print(f"[警告] rclone.conf が見つかりません: {rclone_conf}")
 
+def build_config(base: str = None) -> dict:
+    if base is None:
+        base = _find_base()
+    shared = load_shared(base)
+    personal = load_personal(base)
+    if personal is None:
+        return None
+    config = {}
+    config.update(shared)
+    config.update(personal)
+    config["rclone_exe_path"] = os.path.join(base, "rclone", "rclone.exe")
+    config["rclone_config_path"] = os.path.join(base, "rclone.conf")
     return config
 
 
-def print_config(config: dict) -> None:
-    print("\n=== 現在の設定 ===")
-    print(f"  インスタンスパス  : {config['curseforge_instance_path']}")
-    print(f"  ワールド名       : {config['world_name']}")
-    print(f"  GAS URL          : {config['gas_url'][:60]}...")
-    print(f"  rclone リモート  : {config['rclone_remote_name']}")
-    print(f"  Drive フォルダID : {config['rclone_drive_folder_id'][:20]}...")
-    print(f"  プレイヤー名     : {config['player_name']}")
-    print(f"  バックアップ世代 : {config['backup_generations']}")
-    print(f"  ロックタイムアウト: {config['lock_timeout_hours']} 時間")
-    print()
+def print_config(config: dict) -> str:
+    return (
+        f"インスタンスパス : {config.get('curseforge_instance_path','')}\n"
+        f"ワールド名      : {config.get('world_name','')}\n"
+        f"GAS URL         : {config.get('gas_url','')[:60]}...\n"
+        f"rclone リモート : {config.get('rclone_remote_name','')}\n"
+        f"Drive フォルダID: {config.get('rclone_drive_folder_id','')[:20]}...\n"
+        f"プレイヤー名    : {config.get('player_name','')}\n"
+        f"バックアップ世代: {config.get('backup_generations','')}\n"
+        f"ロックタイムアウト: {config.get('lock_timeout_hours','')} 時間"
+    )
 PYEOF
 
 # --- modules/status_mgr.py ---
@@ -233,7 +237,8 @@ def _run_rclone(config: dict, args: list[str], show_progress: bool = True) -> bo
     print(f"[rclone] 実行中: {' '.join(cmd)}")
 
     try:
-        result = subprocess.run(cmd, capture_output=not show_progress, text=True)
+        result = subprocess.run(cmd, capture_output=not show_progress, text=True,
+                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         if result.returncode != 0:
             if not show_progress and result.stderr:
                 print(f"[rclone エラー] {result.stderr.strip()}")
@@ -260,7 +265,8 @@ def check_remote_world_exists(config: dict) -> bool:
         "--max-depth", "1",
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
+                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         return result.returncode == 0 and result.stdout.strip() != ""
     except Exception:
         return False
@@ -318,7 +324,8 @@ def _cleanup_old_backups(config: dict, max_generations: int) -> None:
         "--dirs-only", "--max-depth", "1",
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
+                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         if result.returncode != 0:
             return
         dirs = sorted([d.strip().rstrip("/") for d in result.stdout.strip().split("\n") if d.strip()])
@@ -332,7 +339,8 @@ def _cleanup_old_backups(config: dict, max_generations: int) -> None:
                 "--config", rclone_conf,
                 "--drive-root-folder-id", folder_id,
             ]
-            subprocess.run(delete_cmd, capture_output=True, text=True, timeout=60)
+            subprocess.run(delete_cmd, capture_output=True, text=True, timeout=60,
+                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
     except Exception as e:
         print(f"[警告] バックアップのクリーンアップに失敗しました: {e}")
 PYEOF
@@ -433,7 +441,7 @@ def watch_for_domain(log_path: str, timeout_seconds: int = 120) -> str | None:
     while not os.path.isfile(log_path):
         if time.time() - start_time > timeout_seconds:
             print(f"[エラー] latest.log が見つかりません: {log_path}")
-            print("config.json の curseforge_instance_path を確認してください。")
+            print("インスタンスパスを確認してください。")
             return None
         time.sleep(1)
 
@@ -545,9 +553,9 @@ def wait_for_exit(pid: int, poll_interval: float = 3.0) -> None:
     time.sleep(3)
 PYEOF
 
-# --- main.py (GUI版) ---
+# --- main.py ---
 cat > main.py << 'PYEOF'
-"""ATM10 Session Manager — GUI版エントリポイント (FreeSimpleGUI)"""
+"""ATM10 Session Manager — GUI版 (FreeSimpleGUI) / exe配布対応"""
 
 import os
 import sys
@@ -563,7 +571,10 @@ except ImportError:
 
 import FreeSimpleGUI as sg
 
-from modules.config_mgr import load_config, print_config
+from modules.config_mgr import (
+    _find_base, load_shared, load_personal, save_personal,
+    build_config, print_config,
+)
 from modules.status_mgr import (
     get_status, set_online, update_domain, set_offline, is_lock_expired,
 )
@@ -576,11 +587,88 @@ from modules.process_monitor import find_minecraft_process, wait_for_exit
 
 
 # ---------------------------------------------------------------------------
+# 初回セットアップウィザード
+# ---------------------------------------------------------------------------
+def _run_setup(base: str) -> dict | None:
+    personal = load_personal(base)
+    default_name = personal["player_name"] if personal else ""
+    default_path = personal["curseforge_instance_path"] if personal else ""
+
+    layout = [
+        [sg.Text("初回セットアップ", font=("Helvetica", 16, "bold"))],
+        [sg.HorizontalSeparator()],
+        [sg.Text("")],
+        [sg.Text("Minecraft のプレイヤー名を入力してください:")],
+        [sg.Input(default_name, key="-NAME-", size=(40, 1))],
+        [sg.Text("")],
+        [sg.Text("CurseForge の ATM10 インスタンスフォルダを選択してください:")],
+        [sg.Text("（CurseForge で ATM10 を右クリック → Open Folder で\n"
+                  " 開くフォルダと同じものを選んでください）",
+                  font=("Helvetica", 9))],
+        [sg.Input(default_path, key="-PATH-", size=(40, 1)),
+         sg.FolderBrowse("選択", target="-PATH-")],
+        [sg.Text("")],
+        [sg.Button("保存して開始", key="-SAVE-", size=(15, 1)),
+         sg.Button("キャンセル", key="-CANCEL-", size=(10, 1))],
+    ]
+
+    win = sg.Window("ATM10 Session Manager - セットアップ", layout,
+                     finalize=True, modal=True)
+
+    result = None
+    while True:
+        event, values = win.read()
+
+        if event in (sg.WIN_CLOSED, "-CANCEL-"):
+            break
+
+        if event == "-SAVE-":
+            name = values["-NAME-"].strip()
+            path = values["-PATH-"].strip()
+
+            if not name:
+                sg.popup_error("プレイヤー名を入力してください。", title="エラー")
+                continue
+            if not path or not os.path.isdir(path):
+                sg.popup_error(
+                    "有効なフォルダを選択してください。\n"
+                    "CurseForge で ATM10 を右クリック →\n"
+                    "Open Folder で開くフォルダを選んでください。",
+                    title="エラー",
+                )
+                continue
+
+            save_personal(name, path, base)
+            result = build_config(base)
+            break
+
+    win.close()
+    return result
+
+
+def _load_or_setup() -> dict | None:
+    base = _find_base()
+
+    try:
+        load_shared(base)
+    except (FileNotFoundError, ValueError) as e:
+        sg.popup_error(
+            f"共有設定ファイルのエラー:\n{e}\n\n"
+            "shared_config.json が exe と同じフォルダにあるか確認してください。",
+            title="起動エラー",
+        )
+        return None
+
+    config = build_config(base)
+    if config is None:
+        config = _run_setup(base)
+    return config
+
+
+# ---------------------------------------------------------------------------
 # stdout → GUI ログ転送
 # ---------------------------------------------------------------------------
 class _GUIWriter:
-    """sys.stdout を置き換え、print 出力を GUI ログに転送する。"""
-
     def __init__(self, window: sg.Window):
         self._window = window
         self._original = sys.stdout
@@ -611,7 +699,6 @@ def _clipboard_copy(text: str) -> None:
 
 
 def _open_folder(path: str) -> None:
-    """OS のファイルマネージャでフォルダを開く。"""
     if not os.path.isdir(path):
         sg.popup_error(f"フォルダが見つかりません:\n{path}", title="エラー")
         return
@@ -656,6 +743,8 @@ def _make_layout(status_str: str) -> list:
          sg.Button("手動ダウンロード", key="-DOWNLOAD-", size=(20, 1))],
         [sg.Button("saves フォルダを開く", key="-OPEN-SAVES-", size=(20, 1)),
          sg.Button("設定確認", key="-CONFIG-", size=(20, 1))],
+        [sg.Button("個人設定を変更", key="-RECONFIG-", size=(20, 1)),
+         sg.Push()],
         [sg.HorizontalSeparator()],
         [sg.Text("ログ:", font=("Helvetica", 10, "bold"))],
         [sg.Multiline(size=(62, 15), key="-LOG-", autoscroll=True,
@@ -791,7 +880,7 @@ def _host_thread(window: sg.Window, config: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 接続フロー (メインスレッドで実行 — 軽量なため)
+# 接続フロー
 # ---------------------------------------------------------------------------
 def _join_flow(window: sg.Window, config: dict) -> None:
     gas_url = config["gas_url"]
@@ -831,7 +920,7 @@ def _join_flow(window: sg.Window, config: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 手動アップロード (バックグラウンドスレッド)
+# 手動アップロード / ダウンロード (スレッド)
 # ---------------------------------------------------------------------------
 def _upload_thread(window: sg.Window, config: dict) -> None:
     def send(msg):
@@ -849,9 +938,6 @@ def _upload_thread(window: sg.Window, config: dict) -> None:
     window.write_event_value("-TASK-DONE-", None)
 
 
-# ---------------------------------------------------------------------------
-# 手動ダウンロード (バックグラウンドスレッド)
-# ---------------------------------------------------------------------------
 def _download_thread(window: sg.Window, config: dict) -> None:
     def send(msg):
         window.write_event_value("-PRINT-", msg)
@@ -867,10 +953,10 @@ def _download_thread(window: sg.Window, config: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ボタン有効/無効 一括切替
+# ボタン有効/無効
 # ---------------------------------------------------------------------------
 _BUTTONS = ("-HOST-", "-JOIN-", "-UPLOAD-", "-DOWNLOAD-",
-            "-OPEN-SAVES-", "-CONFIG-")
+            "-OPEN-SAVES-", "-CONFIG-", "-RECONFIG-")
 
 
 def _set_buttons(window: sg.Window, enabled: bool) -> None:
@@ -885,18 +971,11 @@ REFRESH_SEC = 30
 
 
 def main() -> None:
-    try:
-        config = load_config()
-    except SystemExit:
-        sg.theme("DarkGrey13")
-        sg.popup_error(
-            "設定ファイルの読み込みに失敗しました。\n"
-            "コンソール出力を確認してください。",
-            title="起動エラー",
-        )
-        return
-
     sg.theme("DarkGrey13")
+
+    config = _load_or_setup()
+    if config is None:
+        return
 
     status_info = get_status(config["gas_url"])
     layout = _make_layout(_status_text(status_info))
@@ -1022,18 +1101,22 @@ def main() -> None:
 
         # 設定確認
         if event == "-CONFIG-":
-            c = config
-            sg.popup(
-                f"インスタンスパス : {c['curseforge_instance_path']}\n"
-                f"ワールド名      : {c['world_name']}\n"
-                f"GAS URL         : {c['gas_url'][:60]}...\n"
-                f"rclone リモート : {c['rclone_remote_name']}\n"
-                f"Drive フォルダID: {c['rclone_drive_folder_id'][:20]}...\n"
-                f"プレイヤー名    : {c['player_name']}\n"
-                f"バックアップ世代: {c['backup_generations']}\n"
-                f"ロックタイムアウト: {c['lock_timeout_hours']} 時間",
-                title="現在の設定", font=("Consolas", 10),
-            )
+            sg.popup(print_config(config),
+                     title="現在の設定", font=("Consolas", 10))
+            continue
+
+        # 個人設定を変更
+        if event == "-RECONFIG-" and not busy:
+            base = _find_base()
+            new_config = _run_setup(base)
+            if new_config is not None:
+                config = new_config
+                _log(window, "[設定] 個人設定を更新しました。")
+                try:
+                    si = get_status(config["gas_url"])
+                    window["-STATUS-"].update(_status_text(si))
+                except Exception:
+                    pass
             continue
 
     sys.stdout = writer._original
@@ -1044,31 +1127,49 @@ if __name__ == "__main__":
     main()
 PYEOF
 
+# --- build.bat ---
+cat > build.bat << 'BATEOF'
+@echo off
+echo === ATM10 Session Manager ビルド ===
+echo.
+
+pip install pyinstaller FreeSimpleGUI requests nbtlib psutil pyperclip
+
+pyinstaller --onefile --noconsole --name ATM10SessionManager main.py --hidden-import=nbtlib --hidden-import=FreeSimpleGUI
+
+echo.
+echo === ビルド完了 ===
+echo dist\ATM10SessionManager.exe が生成されました。
+echo.
+echo 配布フォルダを作成します...
+
+if not exist "dist\release" mkdir "dist\release"
+copy dist\ATM10SessionManager.exe dist\release\
+copy shared_config.json dist\release\
+if not exist "dist\release\rclone" mkdir "dist\release\rclone"
+if exist "rclone\rclone.exe" copy rclone\rclone.exe dist\release\rclone\
+
+echo.
+echo === dist\release フォルダの中身を配布してください ===
+echo 各自が rclone.conf を追加して使います。
+pause
+BATEOF
+
 echo ""
 echo "=== ファイル生成完了 ==="
 echo ""
 
-# 仮想環境セットアップ
-if [ ! -d ".venv" ]; then
-    python -m venv .venv
-    echo "[venv] 仮想環境を作成しました"
-fi
-source .venv/bin/activate
-pip install -r requirements.txt
-echo ""
-
-# Git
+# Git add, commit, push
 git add -A
-git commit -m "feat: CUI→GUI化 (FreeSimpleGUI) + savesフォルダを開く機能
+git commit -m "feat: exe配布対応 + 初回セットアップウィザード + 設定分離
 
-- main.py を FreeSimpleGUI ベースの GUI に全面書き換え
-- ホストフロー/手動UL・DL をバックグラウンドスレッドで実行
-- stdout を GUI ログ Multiline に転送 (_GUIWriter)
-- saves フォルダを OS ファイルマネージャで開くボタン追加
-- ステータスを 30 秒間隔で自動更新
-- ボタン無効化で二重操作を防止
-- config 読み込み失敗時に GUI ポップアップで通知
-- requirements.txt に FreeSimpleGUI 追加"
+- shared_config.json: 共有設定（gas_url等）全員同一
+- my_settings.json: 個人設定（プレイヤー名, パス）初回起動時に自動生成
+- セットアップウィザード: フォルダ選択ダイアログ + プレイヤー名入力
+- 個人設定変更ボタン追加
+- build.bat: PyInstaller で exe 生成 + release フォルダ作成
+- world_sync.py: CREATE_NO_WINDOW で rclone のコンソール非表示
+- config_mgr.py: frozen 対応 (sys.executable ベース)"
 
 git push origin HEAD
 

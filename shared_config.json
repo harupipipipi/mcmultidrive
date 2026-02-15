@@ -1,0 +1,8 @@
+{
+  "gas_url": "https://script.google.com/macros/s/XXXXXXXXXXXX/exec",
+  "rclone_remote_name": "gdrive",
+  "rclone_drive_folder_id": "1DEFxyz_your_folder_id_here",
+  "world_name": "ATM10_Shared",
+  "backup_generations": 5,
+  "lock_timeout_hours": 8
+}
