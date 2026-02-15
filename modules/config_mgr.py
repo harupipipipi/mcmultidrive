@@ -1,15 +1,13 @@
-"""config_mgr.py - 共有設定 + 個人設定の読み込み・バリデーション"""
+"""config_mgr.py - 複数ワールド対応の設定管理"""
 
 import json
 import os
 import sys
 
-
 SHARED_FIELDS = [
     "gas_url", "rclone_remote_name", "rclone_drive_folder_id",
-    "world_name", "backup_generations", "lock_timeout_hours",
+    "backup_generations", "lock_timeout_hours",
 ]
-PERSONAL_FIELDS = ["player_name", "curseforge_instance_path"]
 
 
 def _find_base() -> str:
@@ -17,6 +15,8 @@ def _find_base() -> str:
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+
+# ── shared_config.json (全員共通) ─────────────────
 
 def load_shared(base: str = None) -> dict:
     if base is None:
@@ -32,6 +32,8 @@ def load_shared(base: str = None) -> dict:
     return data
 
 
+# ── my_settings.json (個人設定) ───────────────────
+
 def load_personal(base: str = None) -> dict | None:
     if base is None:
         base = _find_base()
@@ -40,48 +42,67 @@ def load_personal(base: str = None) -> dict | None:
         return None
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    missing = [k for k in PERSONAL_FIELDS if k not in data]
-    if missing:
+    if "player_name" not in data:
         return None
+    if "instance_paths" not in data:
+        data["instance_paths"] = {}
     return data
 
 
-def save_personal(player_name: str, instance_path: str, base: str = None) -> str:
+def save_personal(player_name: str, instance_paths: dict = None,
+                  base: str = None) -> str:
     if base is None:
         base = _find_base()
     path = os.path.join(base, "my_settings.json")
+    existing = load_personal(base)
+    if instance_paths is None:
+        instance_paths = existing["instance_paths"] if existing else {}
     data = {
         "player_name": player_name,
-        "curseforge_instance_path": instance_path,
+        "instance_paths": instance_paths,
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
     return path
 
 
-def build_config(base: str = None) -> dict:
+def set_instance_path(world_name: str, path: str, base: str = None) -> None:
     if base is None:
         base = _find_base()
-    shared = load_shared(base)
+    personal = load_personal(base)
+    if personal is None:
+        return
+    personal["instance_paths"][world_name] = path
+    save_personal(personal["player_name"], personal["instance_paths"], base)
+
+
+def get_instance_path(world_name: str, base: str = None) -> str | None:
+    if base is None:
+        base = _find_base()
     personal = load_personal(base)
     if personal is None:
         return None
+    return personal.get("instance_paths", {}).get(world_name)
+
+
+# ── 統合 config 生成 ──────────────────────────────
+
+def build_config(world_name: str, base: str = None) -> dict | None:
+    if base is None:
+        base = _find_base()
+    try:
+        shared = load_shared(base)
+    except (FileNotFoundError, ValueError):
+        return None
+    personal = load_personal(base)
+    if personal is None:
+        return None
+    instance_path = personal.get("instance_paths", {}).get(world_name)
     config = {}
     config.update(shared)
-    config.update(personal)
+    config["player_name"] = personal["player_name"]
+    config["world_name"] = world_name
+    config["curseforge_instance_path"] = instance_path or ""
     config["rclone_exe_path"] = os.path.join(base, "rclone", "rclone.exe")
     config["rclone_config_path"] = os.path.join(base, "rclone.conf")
     return config
-
-
-def print_config(config: dict) -> str:
-    return (
-        f"インスタンスパス : {config.get('curseforge_instance_path','')}\n"
-        f"ワールド名      : {config.get('world_name','')}\n"
-        f"GAS URL         : {config.get('gas_url','')[:60]}...\n"
-        f"rclone リモート : {config.get('rclone_remote_name','')}\n"
-        f"Drive フォルダID: {config.get('rclone_drive_folder_id','')[:20]}...\n"
-        f"プレイヤー名    : {config.get('player_name','')}\n"
-        f"バックアップ世代: {config.get('backup_generations','')}\n"
-        f"ロックタイムアウト: {config.get('lock_timeout_hours','')} 時間"
-    )

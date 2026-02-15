@@ -1,5 +1,5 @@
+FreeSimpleGUI
 requests
 nbtlib
 psutil
 pyperclip
-FreeSimpleGUI

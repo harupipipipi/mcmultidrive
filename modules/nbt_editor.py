@@ -10,7 +10,7 @@ from nbtlib.tag import Compound, List, String, Byte
 def fix_level_dat(world_path: str) -> bool:
     level_dat_path = os.path.join(world_path, "level.dat")
     if not os.path.isfile(level_dat_path):
-        print("[情報] level.dat が見つかりません（新規ワールドの可能性があります）。")
+        print("[情報] level.dat が見つかりません（新規ワールドの可能性）。")
         return True
     try:
         backup_path = level_dat_path + ".bak"
@@ -32,7 +32,8 @@ def fix_level_dat(world_path: str) -> bool:
         return False
 
 
-def update_servers_dat(instance_path: str, server_ip: str, server_name: str = "ATM10 Session") -> bool:
+def update_servers_dat(instance_path: str, server_ip: str,
+                       server_name: str = "MC MultiDrive Session") -> bool:
     servers_dat_path = os.path.join(instance_path, "servers.dat")
     try:
         if os.path.isfile(servers_dat_path):

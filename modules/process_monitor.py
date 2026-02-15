@@ -16,14 +16,16 @@ def find_minecraft_process() -> int | None:
                         cmdline_str = " ".join(cmdline).lower()
                         if "net.minecraft" in cmdline_str or "minecraft" in cmdline_str:
                             return proc.info["pid"]
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            except (psutil.NoSuchProcess, psutil.AccessDenied,
+                    psutil.ZombieProcess):
                 continue
     except Exception as e:
-        print(f"[警告] プロセス検索中にエラーが発生しました: {e}")
+        print(f"[警告] プロセス検索中にエラー: {e}")
     return None
 
 
-def wait_for_minecraft_start(timeout_seconds: int = 300, poll_interval: float = 3.0) -> int | None:
+def wait_for_minecraft_start(timeout_seconds: int = 300,
+                             poll_interval: float = 3.0) -> int | None:
     start_time = time.time()
     while time.time() - start_time < timeout_seconds:
         pid = find_minecraft_process()

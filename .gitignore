@@ -1,4 +1,3 @@
-config.json
 my_settings.json
 rclone.conf
 rclone/rclone.exe
@@ -11,4 +10,5 @@ dist/
 build/
 *.spec
 .venv/
-ATM10SessionManager.exe
+MCMultiDrive.exe
+config.json
