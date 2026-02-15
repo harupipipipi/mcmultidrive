@@ -1,4 +1,4 @@
-"""MC MultiDrive — 複数ワールド対応セッションマネージャ (GUI)"""
+"""MC MultiDrive — multi-world session manager (GUI)"""
 
 import os
 import sys
@@ -6,6 +6,8 @@ import time
 import threading
 import subprocess
 import platform
+
+import psutil
 
 try:
     import pyperclip
@@ -28,13 +30,20 @@ from modules.world_sync import (
 )
 from modules.nbt_editor import fix_level_dat, update_servers_dat
 from modules.log_watcher import watch_for_domain
-from modules.process_monitor import find_minecraft_process, wait_for_exit
+from modules.process_monitor import (
+    find_minecraft_process, wait_for_exit, wait_for_minecraft_start,
+)
 
 
-# ─── テーマ ──────────────────────────────────────
+# --- domain sharing between threads ---
+_manual_domain_event = threading.Event()
+_manual_domain_value = ""
+
+# --- theme ---
 sg.theme("DarkBlue3")
 
-# ─── ユーティリティ ──────────────────────────────
+
+# --- utilities ---
 
 def _clipboard_copy(text: str) -> None:
     if pyperclip:
@@ -46,7 +55,7 @@ def _clipboard_copy(text: str) -> None:
 
 def _open_folder(path: str) -> None:
     if not os.path.isdir(path):
-        sg.popup_error(f"フォルダが見つかりません:\n{path}", title="エラー")
+        sg.popup_error(f"Folder not found:\n{path}", title="Error")
         return
     if platform.system() == "Windows":
         os.startfile(path)
@@ -56,7 +65,7 @@ def _open_folder(path: str) -> None:
         subprocess.Popen(["xdg-open", path])
 
 
-# ─── stdout → GUI 転送 ──────────────────────────
+# --- stdout -> GUI ---
 
 class _GUIWriter:
     def __init__(self, window: sg.Window):
@@ -77,25 +86,25 @@ class _GUIWriter:
             self._original.flush()
 
 
-# ─── 初回セットアップ ────────────────────────────
+# --- first-time setup ---
 
 def _run_setup(base: str) -> dict | None:
     personal = load_personal(base)
     default_name = personal["player_name"] if personal else ""
 
     layout = [
-        [sg.Text("MC MultiDrive - 初回セットアップ",
+        [sg.Text("MC MultiDrive - Setup",
                  font=("Helvetica", 16, "bold"))],
         [sg.HorizontalSeparator()],
         [sg.Text("")],
-        [sg.Text("Minecraft のプレイヤー名を入力してください:")],
+        [sg.Text("Enter your Minecraft player name:")],
         [sg.Input(default_name, key="-NAME-", size=(40, 1))],
         [sg.Text("")],
-        [sg.Button("開始", key="-SAVE-", size=(15, 1)),
-         sg.Button("キャンセル", key="-CANCEL-", size=(10, 1))],
+        [sg.Button("Start", key="-SAVE-", size=(15, 1)),
+         sg.Button("Cancel", key="-CANCEL-", size=(10, 1))],
     ]
 
-    win = sg.Window("MC MultiDrive - セットアップ", layout,
+    win = sg.Window("MC MultiDrive - Setup", layout,
                     finalize=True, modal=True)
 
     result = None
@@ -106,8 +115,7 @@ def _run_setup(base: str) -> dict | None:
         if event == "-SAVE-":
             name = values["-NAME-"].strip()
             if not name:
-                sg.popup_error("プレイヤー名を入力してください。",
-                               title="エラー")
+                sg.popup_error("Please enter a player name.", title="Error")
                 continue
             save_personal(name, base=base)
             result = {"player_name": name}
@@ -117,25 +125,24 @@ def _run_setup(base: str) -> dict | None:
     return result
 
 
-# ─── インスタンスパス要求ダイアログ ──────────────
+# --- instance path dialog ---
 
 def _ask_instance_path(world_name: str) -> str | None:
     layout = [
-        [sg.Text(f"ワールド「{world_name}」のインスタンスフォルダを選択",
+        [sg.Text(f"Select instance folder for \"{world_name}\"",
                  font=("Helvetica", 12, "bold"))],
         [sg.HorizontalSeparator()],
         [sg.Text("")],
-        [sg.Text("CurseForge でこのModpackを右クリック →\n"
-                 "Open Folder で開くフォルダと同じものを選んでください。",
+        [sg.Text("CurseForge: right-click modpack -> Open Folder",
                  font=("Helvetica", 9))],
         [sg.Text("")],
         [sg.Input(key="-PATH-", size=(45, 1)),
-         sg.FolderBrowse("選択", target="-PATH-")],
+         sg.FolderBrowse("Browse", target="-PATH-")],
         [sg.Text("")],
         [sg.Button("OK", key="-OK-", size=(10, 1)),
-         sg.Button("キャンセル", key="-CANCEL-", size=(10, 1))],
+         sg.Button("Cancel", key="-CANCEL-", size=(10, 1))],
     ]
-    win = sg.Window(f"インスタンスフォルダ - {world_name}", layout,
+    win = sg.Window(f"Instance Folder - {world_name}", layout,
                     finalize=True, modal=True)
     result = None
     while True:
@@ -145,8 +152,7 @@ def _ask_instance_path(world_name: str) -> str | None:
         if event == "-OK-":
             p = values["-PATH-"].strip()
             if not p or not os.path.isdir(p):
-                sg.popup_error("有効なフォルダを選択してください。",
-                               title="エラー")
+                sg.popup_error("Please select a valid folder.", title="Error")
                 continue
             result = p
             break
@@ -154,116 +160,91 @@ def _ask_instance_path(world_name: str) -> str | None:
     return result
 
 
-# ─── 新規ワールド追加ダイアログ ──────────────────
+# --- add world dialog (2-step: pick instance -> pick saves folder) ---
 
 def _ask_new_world(gas_url: str, base: str) -> str | None:
-    layout = [
-        [sg.Text("新しいワールドを追加",
+    # Step 1: pick instance folder
+    layout1 = [
+        [sg.Text("Add New World (1/2)",
                  font=("Helvetica", 12, "bold"))],
         [sg.HorizontalSeparator()],
         [sg.Text("")],
-        [sg.Text("ワールド名（全員共通の名前）:")],
-        [sg.Input(key="-WNAME-", size=(40, 1))],
-        [sg.Text("例: ATM10, Vanilla_1.21, Create",
+        [sg.Text("Select instance folder containing the world:")],
+        [sg.Text("CurseForge: right-click modpack -> Open Folder",
                  font=("Helvetica", 9))],
+        [sg.Input(key="-INST-", size=(45, 1)),
+         sg.FolderBrowse("Browse", target="-INST-")],
         [sg.Text("")],
-        [sg.Button("追加", key="-ADD-", size=(10, 1)),
-         sg.Button("キャンセル", key="-CANCEL-", size=(10, 1))],
+        [sg.Button("Next", key="-NEXT-", size=(10, 1)),
+         sg.Button("Cancel", key="-CANCEL-", size=(10, 1))],
     ]
-    win = sg.Window("ワールド追加", layout, finalize=True, modal=True)
+    win1 = sg.Window("Add World (1/2)", layout1, finalize=True, modal=True)
+    instance_path = None
+    while True:
+        event, values = win1.read()
+        if event in (sg.WIN_CLOSED, "-CANCEL-"):
+            win1.close()
+            return None
+        if event == "-NEXT-":
+            p = values["-INST-"].strip()
+            saves_dir = os.path.join(p, "saves") if p else ""
+            if not p or not os.path.isdir(saves_dir):
+                sg.popup_error(
+                    "Please select a valid instance folder.\n"
+                    "(It must contain a 'saves' folder)",
+                    title="Error")
+                continue
+            instance_path = p
+            break
+    win1.close()
+
+    # Step 2: list worlds in saves/
+    saves_dir = os.path.join(instance_path, "saves")
+    world_dirs = sorted([
+        d for d in os.listdir(saves_dir)
+        if os.path.isdir(os.path.join(saves_dir, d))
+        and not d.startswith(".")
+    ])
+    if not world_dirs:
+        sg.popup_error("No worlds found in saves folder.\n"
+                       "Create a world in Minecraft first.",
+                       title="Error")
+        return None
+
+    layout2 = [
+        [sg.Text("Add New World (2/2)",
+                 font=("Helvetica", 12, "bold"))],
+        [sg.HorizontalSeparator()],
+        [sg.Text("Select the world to share:")],
+        [sg.Listbox(world_dirs, size=(40, 10), key="-WSEL-",
+                    select_mode=sg.LISTBOX_SELECT_MODE_SINGLE)],
+        [sg.Text("")],
+        [sg.Button("Add", key="-ADD-", size=(10, 1)),
+         sg.Button("Cancel", key="-CANCEL-", size=(10, 1))],
+    ]
+    win2 = sg.Window("Add World (2/2)", layout2, finalize=True, modal=True)
     result = None
     while True:
-        event, values = win.read()
+        event, values = win2.read()
         if event in (sg.WIN_CLOSED, "-CANCEL-"):
             break
         if event == "-ADD-":
-            wname = values["-WNAME-"].strip()
-            if not wname:
-                sg.popup_error("ワールド名を入力してください。",
-                               title="エラー")
+            sel = values["-WSEL-"]
+            if not sel:
+                sg.popup_error("Please select a world.", title="Error")
                 continue
+            wname = sel[0]
             if not add_world(gas_url, wname):
-                sg.popup_error("ワールドの追加に失敗しました。",
-                               title="エラー")
+                sg.popup_error("Failed to add world.", title="Error")
                 continue
+            set_instance_path(wname, instance_path, base)
             result = wname
             break
-    win.close()
+    win2.close()
     return result
 
 
-# ─── ドメイン手動入力ダイアログ ────────────────────
-
-def _ask_domain_manual(world_name: str) -> str | None:
-    layout = [
-        [sg.Text(f"ワールド「{world_name}」のドメインを入力",
-                 font=("Helvetica", 12, "bold"))],
-        [sg.HorizontalSeparator()],
-        [sg.Text("")],
-        [sg.Text("e4mcドメインの自動検出に失敗しました。\n"
-                 "Minecraftのログからドメインをコピーして貼り付けてください。\n"
-                 "（例: brave-sunset.sg.e4mc.link）",
-                 font=("Helvetica", 9))],
-        [sg.Text("")],
-        [sg.Input(key="-DOMAIN-", size=(45, 1))],
-        [sg.Text("")],
-        [sg.Button("OK", key="-OK-", size=(10, 1)),
-         sg.Button("スキップ", key="-SKIP-", size=(10, 1))],
-    ]
-    win = sg.Window(f"ドメイン入力 - {world_name}", layout,
-                    finalize=True, modal=True)
-    result = None
-    while True:
-        event, values = win.read()
-        if event in (sg.WIN_CLOSED, "-SKIP-"):
-            break
-        if event == "-OK-":
-            d = values["-DOMAIN-"].strip()
-            if d:
-                result = d
-                break
-            sg.popup_error("ドメインを入力してください。", title="エラー")
-    win.close()
-    return result
-
-
-# ─── ドメイン手動入力ダイアログ ────────────────────
-
-def _ask_domain_manual(world_name: str) -> str | None:
-    layout = [
-        [sg.Text(f"ワールド「{world_name}」のドメインを入力",
-                 font=("Helvetica", 12, "bold"))],
-        [sg.HorizontalSeparator()],
-        [sg.Text("")],
-        [sg.Text("e4mcドメインの自動検出に失敗しました。\n"
-                 "Minecraftのチャット欄に表示されたドメインを\n"
-                 "コピーして貼り付けてください。\n"
-                 "（例: brave-sunset.sg.e4mc.link）",
-                 font=("Helvetica", 9))],
-        [sg.Text("")],
-        [sg.Input(key="-DOMAIN-", size=(45, 1))],
-        [sg.Text("")],
-        [sg.Button("OK", key="-OK-", size=(10, 1)),
-         sg.Button("スキップ", key="-SKIP-", size=(10, 1))],
-    ]
-    win = sg.Window(f"ドメイン入力 - {world_name}", layout,
-                    finalize=True, modal=True)
-    result = None
-    while True:
-        event, values = win.read()
-        if event in (sg.WIN_CLOSED, "-SKIP-"):
-            break
-        if event == "-OK-":
-            d = values["-DOMAIN-"].strip()
-            if d:
-                result = d
-                break
-            sg.popup_error("ドメインを入力してください。", title="エラー")
-    win.close()
-    return result
-
-
-# ─── 設定画面 ────────────────────────────────────
+# --- settings dialog ---
 
 def _show_settings(base: str, worlds: list[dict]) -> None:
     personal = load_personal(base)
@@ -273,10 +254,10 @@ def _show_settings(base: str, worlds: list[dict]) -> None:
     instance_paths = personal.get("instance_paths", {})
 
     rows = []
-    rows.append([sg.Text("プレイヤー名:"),
+    rows.append([sg.Text("Player Name:"),
                  sg.Input(player_name, key="-SNAME-", size=(30, 1))])
     rows.append([sg.HorizontalSeparator()])
-    rows.append([sg.Text("ワールド別インスタンスパス:",
+    rows.append([sg.Text("Instance paths per world:",
                          font=("Helvetica", 10, "bold"))])
 
     world_names = [w.get("world_name", "") for w in worlds]
@@ -285,19 +266,19 @@ def _show_settings(base: str, worlds: list[dict]) -> None:
         rows.append([
             sg.Text(f"  {wn}:", size=(18, 1)),
             sg.Input(cur, key=f"-SP-{wn}-", size=(30, 1)),
-            sg.FolderBrowse("選択", target=f"-SP-{wn}-"),
+            sg.FolderBrowse("Browse", target=f"-SP-{wn}-"),
         ])
 
     layout = [
-        [sg.Text("設定", font=("Helvetica", 14, "bold"))],
+        [sg.Text("Settings", font=("Helvetica", 14, "bold"))],
         [sg.HorizontalSeparator()],
         *rows,
         [sg.Text("")],
-        [sg.Button("保存", key="-SSAVE-", size=(10, 1)),
-         sg.Button("閉じる", key="-SCLOSE-", size=(10, 1))],
+        [sg.Button("Save", key="-SSAVE-", size=(10, 1)),
+         sg.Button("Close", key="-SCLOSE-", size=(10, 1))],
     ]
 
-    win = sg.Window("設定", layout, finalize=True, modal=True)
+    win = sg.Window("Settings", layout, finalize=True, modal=True)
     while True:
         event, values = win.read()
         if event in (sg.WIN_CLOSED, "-SCLOSE-"):
@@ -305,25 +286,23 @@ def _show_settings(base: str, worlds: list[dict]) -> None:
         if event == "-SSAVE-":
             new_name = values["-SNAME-"].strip()
             if not new_name:
-                sg.popup_error("プレイヤー名を入力してください。",
-                               title="エラー")
+                sg.popup_error("Please enter a player name.", title="Error")
                 continue
             new_paths = {}
             for wn in world_names:
                 p = values.get(f"-SP-{wn}-", "").strip()
                 if p:
                     new_paths[wn] = p
-            # 既存のパス（上記リストにないワールド）を保持
             for k, v in instance_paths.items():
                 if k not in new_paths and v:
                     new_paths[k] = v
             save_personal(new_name, new_paths, base)
-            sg.popup("設定を保存しました。", title="保存完了")
+            sg.popup("Settings saved.", title="Done")
             break
     win.close()
 
 
-# ─── ワールドリスト表示文字列 ────────────────────
+# --- world display string ---
 
 def _world_display(w: dict) -> str:
     name = w.get("world_name", "???")
@@ -334,71 +313,73 @@ def _world_display(w: dict) -> str:
     return f"[--]  {name}"
 
 
-# ─── メインレイアウト ────────────────────────────
+# --- main layout ---
 
 def _make_layout(worlds: list[dict], player_name: str) -> list:
     world_items = [_world_display(w) for w in worlds]
 
     left_col = [
-        [sg.Text("ワールド一覧", font=("Helvetica", 10, "bold"))],
+        [sg.Text("Worlds", font=("Helvetica", 10, "bold"))],
         [sg.Listbox(world_items, size=(32, 12), key="-WLIST-",
                     enable_events=True, font=("Consolas", 10))],
-        [sg.Button("+ 新規追加", key="-ADD-WORLD-", size=(14, 1))],
+        [sg.Button("+ Add World", key="-ADD-WORLD-", size=(14, 1))],
+        [sg.Button("Delete", key="-DELETE-WORLD-", size=(14, 1),
+                   button_color=("white", "firebrick"))],
     ]
 
     right_col = [
-        [sg.Text("詳細", font=("Helvetica", 10, "bold"))],
-        [sg.Text("ワールド:", size=(10, 1)),
+        [sg.Text("Details", font=("Helvetica", 10, "bold"))],
+        [sg.Text("World:", size=(10, 1)),
          sg.Text("---", key="-D-NAME-", size=(25, 1),
                  font=("Helvetica", 10, "bold"))],
-        [sg.Text("ステータス:", size=(10, 1)),
+        [sg.Text("Status:", size=(10, 1)),
          sg.Text("---", key="-D-STATUS-", size=(25, 1))],
-        [sg.Text("ホスト:", size=(10, 1)),
+        [sg.Text("Host:", size=(10, 1)),
          sg.Text("---", key="-D-HOST-", size=(25, 1))],
-        [sg.Text("ドメイン:", size=(10, 1)),
+        [sg.Text("Domain:", size=(10, 1)),
          sg.Text("---", key="-D-DOMAIN-", size=(25, 1))],
         [sg.Text("")],
-        [sg.Button("ホストする", key="-HOST-", size=(12, 1)),
-         sg.Button("接続する", key="-JOIN-", size=(12, 1))],
-        [sg.Button("ドメインコピー", key="-COPY-DOMAIN-", size=(12, 1)),
-         sg.Button("savesを開く", key="-OPEN-SAVES-", size=(12, 1))],
-        [sg.Button("手動UL", key="-UPLOAD-", size=(12, 1)),
-         sg.Button("手動DL", key="-DOWNLOAD-", size=(12, 1))],
-        [sg.Button("削除", key="-DELETE-WORLD-", size=(12, 1),
-                   button_color=("white", "firebrick"))],
-        [sg.Button("削除", key="-DELETE-WORLD-", size=(12, 1),
-                   button_color=("white", "firebrick"))],
+        [sg.Button("Host", key="-HOST-", size=(12, 1)),
+         sg.Button("Join", key="-JOIN-", size=(12, 1))],
+        [sg.Button("Copy Domain", key="-COPY-DOMAIN-", size=(12, 1)),
+         sg.Button("Open saves", key="-OPEN-SAVES-", size=(12, 1))],
+        [sg.Button("Manual UL", key="-UPLOAD-", size=(12, 1)),
+         sg.Button("Manual DL", key="-DOWNLOAD-", size=(12, 1))],
+        [sg.Text("")],
+        [sg.Text("Manual domain:", size=(14, 1)),
+         sg.Input(key="-MANUAL-DOMAIN-", size=(20, 1)),
+         sg.Button("Set", key="-SET-DOMAIN-", size=(5, 1))],
     ]
 
     layout = [
         [sg.Text("MC MultiDrive", font=("Helvetica", 18, "bold")),
          sg.Push(),
-         sg.Text(f"プレイヤー: {player_name}",
+         sg.Text(f"Player: {player_name}",
                  font=("Helvetica", 10))],
         [sg.HorizontalSeparator()],
         [sg.Column(left_col, vertical_alignment="top"),
          sg.VSeperator(),
          sg.Column(right_col, vertical_alignment="top")],
         [sg.HorizontalSeparator()],
-        [sg.Text("ログ:", font=("Helvetica", 10, "bold"))],
+        [sg.Text("Log:", font=("Helvetica", 10, "bold"))],
         [sg.Multiline(size=(72, 10), key="-LOG-", autoscroll=True,
                       disabled=True, font=("Consolas", 9))],
-        [sg.Button("更新", key="-REFRESH-", size=(8, 1)),
-         sg.Button("設定", key="-SETTINGS-", size=(8, 1)),
+        [sg.Button("Refresh", key="-REFRESH-", size=(8, 1)),
+         sg.Button("Settings", key="-SETTINGS-", size=(8, 1)),
          sg.Push(),
-         sg.Button("終了", key="-EXIT-", size=(8, 1))],
+         sg.Button("Exit", key="-EXIT-", size=(8, 1))],
     ]
     return layout
 
 
-# ─── ログ書き込み ────────────────────────────────
+# --- log helper ---
 
 def _log(window: sg.Window, msg: str) -> None:
     window["-LOG-"].update(msg + "\n", append=True)
     window.refresh()
 
 
-# ─── 選択中ワールド取得 ──────────────────────────
+# --- selected world ---
 
 def _selected_world(window: sg.Window, worlds: list[dict]) -> dict | None:
     sel = window["-WLIST-"].get()
@@ -416,7 +397,7 @@ def _selected_world_name(window: sg.Window, worlds: list[dict]) -> str | None:
     return w.get("world_name") if w else None
 
 
-# ─── 詳細パネル更新 ──────────────────────────────
+# --- detail panel update ---
 
 def _update_detail(window: sg.Window, w: dict | None) -> None:
     if w is None:
@@ -428,22 +409,22 @@ def _update_detail(window: sg.Window, w: dict | None) -> None:
     window["-D-NAME-"].update(w.get("world_name", "---"))
     st = w.get("status", "offline")
     if st == "online":
-        window["-D-STATUS-"].update("オンライン")
+        window["-D-STATUS-"].update("Online")
         window["-D-HOST-"].update(w.get("host", "---"))
         domain = w.get("domain", "")
         if domain and domain != "preparing...":
             window["-D-DOMAIN-"].update(domain)
         elif domain == "preparing...":
-            window["-D-DOMAIN-"].update("準備中...")
+            window["-D-DOMAIN-"].update("Preparing...")
         else:
             window["-D-DOMAIN-"].update("---")
     else:
-        window["-D-STATUS-"].update("オフライン")
+        window["-D-STATUS-"].update("Offline")
         window["-D-HOST-"].update("---")
         window["-D-DOMAIN-"].update("---")
 
 
-# ─── インスタンスパス確保 ────────────────────────
+# --- ensure instance path ---
 
 def _ensure_instance_path(world_name: str, base: str) -> str | None:
     p = get_instance_path(world_name, base)
@@ -455,7 +436,7 @@ def _ensure_instance_path(world_name: str, base: str) -> str | None:
     return p
 
 
-# ─── ホスト処理（バックグラウンドスレッド） ──────
+# --- host thread (background) ---
 
 def _host_thread(window: sg.Window, config: dict) -> None:
     gas_url = config["gas_url"]
@@ -468,136 +449,142 @@ def _host_thread(window: sg.Window, config: dict) -> None:
         window.write_event_value("-PRINT-", msg)
 
     try:
-        send(f"[{world_name}] ステータスを確認中...")
+        send(f"[{world_name}] Checking status...")
         status_info = get_status(gas_url, world_name)
         status = status_info.get("status", "error")
 
         if status == "error":
-            send(f"[{world_name}] ステータスを取得できませんでした。")
+            send(f"[{world_name}] Could not get status.")
             window.write_event_value("-HOST-DONE-", False)
             return
 
         if status == "online":
-            host = status_info.get("host", "不明")
+            host = status_info.get("host", "unknown")
             lock_ts = status_info.get("lock_timestamp", "")
             if is_lock_expired(lock_ts, lock_timeout):
                 window.write_event_value("-HOST-LOCK-EXPIRED-",
                                          {"world": world_name, "host": host})
                 return
             else:
-                send(f"[{world_name}] 現在 {host} がホスト中です。")
+                send(f"[{world_name}] Currently hosted by {host}.")
                 window.write_event_value("-HOST-DONE-", False)
                 return
 
-        send(f"[{world_name}] ホスト権限を取得中...")
+        send(f"[{world_name}] Acquiring host lock...")
         if not set_online(gas_url, world_name, player_name):
-            send(f"[{world_name}] ホスト権限を取得できませんでした。")
+            send(f"[{world_name}] Failed to acquire host lock.")
             window.write_event_value("-HOST-DONE-", False)
             return
-        send(f"[{world_name}] ホスト取得成功（{player_name}）")
+        send(f"[{world_name}] Host acquired ({player_name})")
 
         if check_remote_world_exists(config):
-            send(f"[{world_name}] ワールドをダウンロード中...")
+            send(f"[{world_name}] Downloading world...")
             if not download_world(config):
-                send(f"[{world_name}] ダウンロード失敗。")
+                send(f"[{world_name}] Download failed.")
                 set_offline(gas_url, world_name)
                 window.write_event_value("-HOST-DONE-", False)
                 return
-            send(f"[{world_name}] ダウンロード完了！")
+            send(f"[{world_name}] Download complete!")
         else:
-            send(f"[{world_name}] Drive上にワールドデータなし（新規）。")
+            send(f"[{world_name}] No world data on Drive (new world).")
 
         world_path = os.path.join(instance_path, "saves", world_name)
         if os.path.isdir(world_path):
-            send(f"[{world_name}] level.dat を修正中...")
+            send(f"[{world_name}] Fixing level.dat...")
             fix_level_dat(world_path)
 
         send("=" * 50)
-        send("準備完了！")
-        send(f"  1. CurseForge で Modpack の Play を押す")
-        send(f"  2. ワールド「{world_name}」を開く")
-        send(f"  3. Esc → Open to LAN → Start LAN World")
+        send("Ready!")
+        send("  1. Press Play in CurseForge")
+        send(f"  2. Open world \"{world_name}\"")
+        send("  3. Esc -> Open to LAN -> Start LAN World")
         send("=" * 50)
-        send("e4mc ドメインを自動検出中...")
+        send("Detecting e4mc domain...")
+        send("If auto-detect fails, enter domain manually in the right panel and click 'Set'.")
 
         log_path = os.path.join(instance_path, "logs", "latest.log")
-        domain = watch_for_domain(log_path, timeout_seconds=600)
+
+        # auto-detect in background thread
+        domain_result = [None]
+        def _auto_detect():
+            domain_result[0] = watch_for_domain(log_path, timeout_seconds=600)
+        detect_thread = threading.Thread(target=_auto_detect, daemon=True)
+        detect_thread.start()
+
+        # wait for auto-detect OR manual input
+        global _manual_domain_value
+        _manual_domain_event.clear()
+        _manual_domain_value = ""
+        domain = None
+
+        while detect_thread.is_alive():
+            detect_thread.join(timeout=1.0)
+            if domain_result[0]:
+                domain = domain_result[0]
+                break
+            if _manual_domain_event.is_set():
+                domain = _manual_domain_value
+                break
+
+        if domain is None and domain_result[0]:
+            domain = domain_result[0]
 
         if domain:
-            send(f"[ドメイン検出] {domain}")
+            send(f"[domain] {domain}")
             update_domain(gas_url, world_name, domain)
             _clipboard_copy(domain)
-            send(f"ドメインをクリップボードにコピーしました。")
+            send("Domain copied to clipboard.")
         else:
-            send("[警告] e4mc ドメインが自動検出できませんでした。")
-            send("手動入力ダイアログを表示します...")
-            window.write_event_value("-ASK-DOMAIN-", world_name)
-            # メインスレッドからの応答を待つ（最大120秒）
-            import time as _time
-            _deadline = _time.time() + 120
-            domain = None
-            while _time.time() < _deadline:
-                # _host_thread_domain に値がセットされるのを待つ
-                if hasattr(_host_thread, '_manual_domain'):
-                    domain = _host_thread._manual_domain
-                    del _host_thread._manual_domain
-                    break
-                _time.sleep(0.5)
-            if domain:
-                send(f"[手動入力] ドメイン: {domain}")
-                update_domain(gas_url, world_name, domain)
-                _clipboard_copy(domain)
-                send(f"ドメインをクリップボードにコピーしました。")
-            else:
-                send("[警告] ドメインが設定されませんでした。")
+            send("[warning] e4mc domain not detected.")
 
-        send("Minecraft の終了を待機中（10分ごとに自動保存）...")
+        # -- wait for Minecraft exit + periodic autosave --
+        send("Waiting for Minecraft to exit (autosave every 10 min)...")
+        AUTOSAVE_INTERVAL = 600
+
         pid = find_minecraft_process()
-        if pid:
-            import time as _time
-            AUTOSAVE_INTERVAL = 600  # 10分
-            last_save = _time.time()
-            while True:
-                try:
-                    import psutil as _psutil
-                    proc = _psutil.Process(pid)
-                    if not proc.is_running() or proc.status() == _psutil.STATUS_ZOMBIE:
-                        break
-                except _psutil.NoSuchProcess:
-                    break
-                except Exception:
-                    break
+        if not pid:
+            send("[info] Waiting for Minecraft to start (up to 5 min)...")
+            pid = wait_for_minecraft_start(timeout_seconds=300)
 
-                if _time.time() - last_save >= AUTOSAVE_INTERVAL:
-                    send(f"[自動保存] {world_name} をアップロード中...")
-                    upload_world(config)
-                    last_save = _time.time()
-                    send(f"[自動保存] 完了")
-
-                _time.sleep(3)
-
-            send("[プロセス] Minecraft が終了しました。")
-            _time.sleep(3)
-        else:
-            send("[情報] Minecraft プロセスが見つかりません。手動ULしてください。")
+        if not pid:
+            send("[info] Minecraft process not found. Please use Manual UL.")
             window.write_event_value("-HOST-DONE-", True)
             return
 
-        send(f"[{world_name}] バックアップ作成中...")
+        send(f"[process] Minecraft detected (PID: {pid})")
+        last_save = time.time()
+        while True:
+            try:
+                proc = psutil.Process(pid)
+                if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
+                    break
+            except psutil.NoSuchProcess:
+                break
+            if time.time() - last_save >= AUTOSAVE_INTERVAL:
+                send(f"[autosave] Uploading {world_name}...")
+                upload_world(config)
+                last_save = time.time()
+                send("[autosave] Done.")
+            time.sleep(3)
+
+        send("[process] Minecraft exited.")
+        time.sleep(3)
+
+        send(f"[{world_name}] Creating backup...")
         create_backup(config)
 
-        send(f"[{world_name}] アップロード中...")
+        send(f"[{world_name}] Uploading...")
         if upload_world(config):
-            send(f"[{world_name}] アップロード完了！")
+            send(f"[{world_name}] Upload complete!")
         else:
-            send(f"[{world_name}] アップロード失敗。")
+            send(f"[{world_name}] Upload failed.")
 
         set_offline(gas_url, world_name)
-        send(f"[{world_name}] セッション終了。ステータスをオフラインに更新しました。")
+        send(f"[{world_name}] Session ended. Status set to offline.")
         window.write_event_value("-HOST-DONE-", True)
 
     except Exception as e:
-        send(f"[エラー] ホスト処理中に例外: {e}")
+        send(f"[error] Exception during host: {e}")
         try:
             set_offline(gas_url, world_name)
         except Exception:
@@ -605,25 +592,23 @@ def _host_thread(window: sg.Window, config: dict) -> None:
         window.write_event_value("-HOST-DONE-", False)
 
 
-# ─── メインループ ────────────────────────────────
+# --- main loop ---
 
 def main():
     base = _find_base()
 
-    # shared_config.json チェック
     try:
         shared = load_shared(base)
     except (FileNotFoundError, ValueError) as e:
         sg.popup_error(
-            f"共有設定ファイルのエラー:\n{e}\n\n"
-            "shared_config.json が exe と同じフォルダにあるか確認してください。",
-            title="起動エラー",
+            f"Shared config error:\n{e}\n\n"
+            "Make sure shared_config.json is next to the exe.",
+            title="Startup Error",
         )
         return
 
     gas_url = shared["gas_url"]
 
-    # 初回セットアップ
     personal = load_personal(base)
     if personal is None:
         result = _run_setup(base)
@@ -635,12 +620,10 @@ def main():
 
     player_name = personal["player_name"]
 
-    # ワールド一覧取得
     worlds = list_worlds(gas_url)
     if not worlds:
         worlds = []
 
-    # メインウィンドウ
     window = sg.Window(
         "MC MultiDrive",
         _make_layout(worlds, player_name),
@@ -656,56 +639,112 @@ def main():
         if event in (sg.WIN_CLOSED, "-EXIT-"):
             break
 
-        # ─── stdout からのログ転送 ─────────────
+        # --- stdout log ---
         if event == "-PRINT-":
             _log(window, values["-PRINT-"])
 
-        # ─── ワールド選択 ─────────────────────
+        # --- world selection ---
         if event == "-WLIST-":
             w = _selected_world(window, worlds)
             _update_detail(window, w)
 
-        # ─── ステータス更新 ───────────────────
+        # --- refresh ---
         if event == "-REFRESH-":
-            _log(window, "[更新] ステータスを取得中...")
+            _log(window, "[refresh] Fetching status...")
             worlds = list_worlds(gas_url)
             sel_name = _selected_world_name(window, worlds)
             items = [_world_display(w) for w in worlds]
             window["-WLIST-"].update(items)
-            # 選択を復元
             if sel_name:
                 for i, w in enumerate(worlds):
                     if w.get("world_name") == sel_name:
-                        window["-WLIST-"].update(
-                            set_to_index=[i])
+                        window["-WLIST-"].update(set_to_index=[i])
                         _update_detail(window, w)
                         break
-            _log(window, f"[更新] {len(worlds)} 個のワールドを取得しました。")
+            _log(window, f"[refresh] {len(worlds)} worlds found.")
 
-        # ─── ワールド追加 ─────────────────────
+        # --- add world ---
         if event == "-ADD-WORLD-":
             wname = _ask_new_world(gas_url, base)
             if wname:
-                _log(window, f"[追加] ワールド「{wname}」を追加しました。")
+                _log(window, f"[add] World \"{wname}\" added.")
                 worlds = list_worlds(gas_url)
                 items = [_world_display(w) for w in worlds]
                 window["-WLIST-"].update(items)
 
-        # ─── ホスト ───────────────────────────
-        if event == "-HOST-":
+        # --- delete world ---
+        if event == "-DELETE-WORLD-":
             if hosting:
-                sg.popup("既にホスト処理が実行中です。", title="情報")
+                sg.popup("Cannot delete while hosting.", title="Info")
                 continue
             wname = _selected_world_name(window, worlds)
             if not wname:
-                sg.popup("ワールドを選択してください。", title="情報")
+                sg.popup("Select a world first.", title="Info")
+                continue
+            w = _selected_world(window, worlds)
+            if w and w.get("status") == "online":
+                sg.popup("Cannot delete an online world.", title="Error")
+                continue
+            ans = sg.popup_yes_no(
+                f"Delete world \"{wname}\"?\n\n"
+                "Drive data will be moved to backups/.\n"
+                "Delete from backups/ manually if needed.",
+                title="Confirm Delete",
+            )
+            if ans == "Yes":
+                config = build_config(wname, base)
+                if config:
+                    _log(window, f"[delete] Archiving {wname}...")
+                    archive_ok = archive_world(config)
+                    if archive_ok:
+                        if delete_world(gas_url, wname):
+                            _log(window, f"[delete] {wname} deleted.")
+                        else:
+                            _log(window, f"[error] GAS delete failed.")
+                    else:
+                        _log(window, f"[error] Archive failed.")
+                else:
+                    # config build failed (no instance path) - still delete from GAS
+                    if delete_world(gas_url, wname):
+                        _log(window, f"[delete] {wname} removed from list.")
+                    else:
+                        _log(window, f"[error] GAS delete failed.")
+                worlds = list_worlds(gas_url)
+                items = [_world_display(w) for w in worlds]
+                window["-WLIST-"].update(items)
+                _update_detail(window, None)
+
+        # --- manual domain set ---
+        if event == "-SET-DOMAIN-":
+            global _manual_domain_value
+            manual_d = values.get("-MANUAL-DOMAIN-", "").strip()
+            if manual_d:
+                _manual_domain_value = manual_d
+                _manual_domain_event.set()
+                _log(window, f"[manual] Domain set: {manual_d}")
+                # Also update GAS if hosting
+                if hosting:
+                    wname = _selected_world_name(window, worlds)
+                    if wname:
+                        update_domain(gas_url, wname, manual_d)
+            else:
+                sg.popup("Please enter a domain.", title="Info")
+
+        # --- host ---
+        if event == "-HOST-":
+            if hosting:
+                sg.popup("Already hosting.", title="Info")
+                continue
+            wname = _selected_world_name(window, worlds)
+            if not wname:
+                sg.popup("Select a world first.", title="Info")
                 continue
             inst = _ensure_instance_path(wname, base)
             if not inst:
                 continue
             config = build_config(wname, base)
             if not config:
-                sg.popup_error("設定の構築に失敗しました。", title="エラー")
+                sg.popup_error("Config build failed.", title="Error")
                 continue
             hosting = True
             threading.Thread(
@@ -715,30 +754,19 @@ def main():
 
         if event == "-HOST-DONE-":
             hosting = False
-            # 自動で更新
             worlds = list_worlds(gas_url)
             items = [_world_display(w) for w in worlds]
             window["-WLIST-"].update(items)
-
-        if event == "-ASK-DOMAIN-":
-            wn = values["-ASK-DOMAIN-"]
-            manual_domain = _ask_domain_manual(wn)
-            _host_thread._manual_domain = manual_domain
-
-        if event == "-ASK-DOMAIN-":
-            wn = values["-ASK-DOMAIN-"]
-            manual_domain = _ask_domain_manual(wn)
-            _host_thread._manual_domain = manual_domain
 
         if event == "-HOST-LOCK-EXPIRED-":
             info = values["-HOST-LOCK-EXPIRED-"]
             wn = info["world"]
             old_host = info["host"]
             ans = sg.popup_yes_no(
-                f"ワールド「{wn}」のロックが期限切れです。\n"
-                f"（前回ホスト: {old_host}）\n\n"
-                "強制的にホストを引き継ぎますか？",
-                title="ロック期限切れ",
+                f"Lock expired for \"{wn}\".\n"
+                f"(Previous host: {old_host})\n\n"
+                "Force takeover?",
+                title="Lock Expired",
             )
             if ans == "Yes":
                 config = build_config(wn, base)
@@ -752,47 +780,47 @@ def main():
             else:
                 hosting = False
 
-        # ─── 接続 ────────────────────────────
+        # --- join ---
         if event == "-JOIN-":
             wname = _selected_world_name(window, worlds)
             if not wname:
-                sg.popup("ワールドを選択してください。", title="情報")
+                sg.popup("Select a world first.", title="Info")
                 continue
             w = _selected_world(window, worlds)
             if not w or w.get("status") != "online":
-                sg.popup("このワールドはオフラインです。", title="情報")
+                sg.popup("This world is offline.", title="Info")
                 continue
             domain = w.get("domain", "")
             if not domain or domain == "preparing...":
-                sg.popup("ドメインがまだ準備中です。少し待ってから更新してください。",
-                         title="情報")
+                sg.popup("Domain not ready yet. Refresh and try again.",
+                         title="Info")
                 continue
             inst = _ensure_instance_path(wname, base)
             if inst:
                 server_label = f"MC MultiDrive - {wname}"
                 update_servers_dat(inst, domain, server_label)
             _clipboard_copy(domain)
-            _log(window, f"[接続] {domain} をクリップボードにコピーしました。")
+            _log(window, f"[join] {domain} copied to clipboard.")
             sg.popup(
-                f"ドメインをコピーしました:\n{domain}\n\n"
-                "CurseForge で Play → マルチプレイから接続してください。",
-                title="接続情報",
+                f"Domain copied:\n{domain}\n\n"
+                "Launch Minecraft -> Multiplayer -> Direct Connect / paste.",
+                title="Join Info",
             )
 
-        # ─── ドメインコピー ───────────────────
+        # --- copy domain ---
         if event == "-COPY-DOMAIN-":
             w = _selected_world(window, worlds)
             if w and w.get("domain") and w["domain"] != "preparing...":
                 _clipboard_copy(w["domain"])
-                _log(window, f"[コピー] {w['domain']}")
+                _log(window, f"[copy] {w['domain']}")
             else:
-                sg.popup("コピーできるドメインがありません。", title="情報")
+                sg.popup("No domain to copy.", title="Info")
 
-        # ─── saves を開く ─────────────────────
+        # --- open saves ---
         if event == "-OPEN-SAVES-":
             wname = _selected_world_name(window, worlds)
             if not wname:
-                sg.popup("ワールドを選択してください。", title="情報")
+                sg.popup("Select a world first.", title="Info")
                 continue
             inst = get_instance_path(wname, base)
             if inst:
@@ -800,73 +828,71 @@ def main():
                 if os.path.isdir(saves_path):
                     _open_folder(saves_path)
                 else:
-                    sg.popup(f"saves フォルダが見つかりません:\n{saves_path}",
-                             title="エラー")
+                    sg.popup(f"saves folder not found:\n{saves_path}",
+                             title="Error")
             else:
-                sg.popup("インスタンスパスが未設定です。\n"
-                         "設定画面で設定してください。", title="情報")
+                sg.popup("Instance path not set.\nUse Settings to configure.",
+                         title="Info")
 
-        # ─── 手動アップロード ─────────────────
+        # --- manual upload ---
         if event == "-UPLOAD-":
             if hosting:
-                sg.popup("ホスト処理中はアップロードできません。",
-                         title="情報")
+                sg.popup("Cannot upload while hosting.", title="Info")
                 continue
             wname = _selected_world_name(window, worlds)
             if not wname:
-                sg.popup("ワールドを選択してください。", title="情報")
+                sg.popup("Select a world first.", title="Info")
                 continue
             inst = _ensure_instance_path(wname, base)
             if not inst:
                 continue
             ans = sg.popup_yes_no(
-                f"ワールド「{wname}」を Google Drive にアップロードしますか？\n"
-                "Drive 上のデータは上書きされます。",
-                title="手動アップロード確認",
+                f"Upload world \"{wname}\" to Google Drive?\n"
+                "Drive data will be overwritten.",
+                title="Confirm Upload",
             )
             if ans == "Yes":
                 config = build_config(wname, base)
                 if config:
-                    _log(window, f"[手動UL] {wname} アップロード中...")
+                    _log(window, f"[upload] {wname} uploading...")
                     threading.Thread(
-                        target=lambda: (
-                            upload_world(config),
+                        target=lambda c=config: (
+                            upload_world(c),
                             window.write_event_value("-REFRESH-", None),
                         ),
                         daemon=True,
                     ).start()
 
-        # ─── 手動ダウンロード ─────────────────
+        # --- manual download ---
         if event == "-DOWNLOAD-":
             if hosting:
-                sg.popup("ホスト処理中はダウンロードできません。",
-                         title="情報")
+                sg.popup("Cannot download while hosting.", title="Info")
                 continue
             wname = _selected_world_name(window, worlds)
             if not wname:
-                sg.popup("ワールドを選択してください。", title="情報")
+                sg.popup("Select a world first.", title="Info")
                 continue
             inst = _ensure_instance_path(wname, base)
             if not inst:
                 continue
             ans = sg.popup_yes_no(
-                f"ワールド「{wname}」を Google Drive からダウンロードしますか？\n"
-                "ローカルのデータは上書きされます。",
-                title="手動ダウンロード確認",
+                f"Download world \"{wname}\" from Google Drive?\n"
+                "Local data will be overwritten.",
+                title="Confirm Download",
             )
             if ans == "Yes":
                 config = build_config(wname, base)
                 if config:
-                    _log(window, f"[手動DL] {wname} ダウンロード中...")
+                    _log(window, f"[download] {wname} downloading...")
                     threading.Thread(
-                        target=lambda: (
-                            download_world(config),
+                        target=lambda c=config: (
+                            download_world(c),
                             window.write_event_value("-REFRESH-", None),
                         ),
                         daemon=True,
                     ).start()
 
-        # ─── 設定 ────────────────────────────
+        # --- settings ---
         if event == "-SETTINGS-":
             _show_settings(base, worlds)
             personal = load_personal(base)

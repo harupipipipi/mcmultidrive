@@ -1,6 +1,9 @@
 my_settings.json
+config.json
+shared_config.json
 rclone.conf
 rclone/rclone.exe
+rclone/
 __pycache__/
 modules/__pycache__/
 *.pyc
@@ -11,6 +14,3 @@ build/
 *.spec
 .venv/
 MCMultiDrive.exe
-config.json
-my_settings.json
-shared_config.json

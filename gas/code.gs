@@ -1,15 +1,12 @@
 /**
- * MC MultiDrive — Google Apps Script (複数ワールド対応)
+ * MC MultiDrive — Google Apps Script (multi-world)
  *
- * スプレッドシートに "status" シートを作成し、このスクリプトを
- * ウェブアプリとしてデプロイしてください。
- *
- * status シート構成:
- *   A列: world_name
- *   B列: status (online / offline)
- *   C列: host
- *   D列: domain
- *   E列: lock_timestamp (UTC ISO8601)
+ * Sheet "status" columns:
+ *   A: world_name
+ *   B: status (online / offline)
+ *   C: host
+ *   D: domain
+ *   E: lock_timestamp (UTC ISO8601)
  */
 
 function getSheet() {
@@ -20,7 +17,7 @@ function findRow(sheet, worldName) {
   var data = sheet.getDataRange().getValues();
   for (var i = 0; i < data.length; i++) {
     if (data[i][0] === worldName) {
-      return i + 1; // 1-indexed
+      return i + 1;
     }
   }
   return -1;
@@ -31,7 +28,7 @@ function jsonResponse(obj) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
-// ─── GET ─────────────────────────────────────────
+// --- GET ---
 
 function doGet(e) {
   var action = (e.parameter.action || "list_worlds");
@@ -78,7 +75,7 @@ function getStatus(sheet, worldName) {
   });
 }
 
-// ─── POST ────────────────────────────────────────
+// --- POST ---
 
 function doPost(e) {
   var data = JSON.parse(e.postData.contents);
@@ -189,7 +186,6 @@ function addWorld(sheet, data) {
   return jsonResponse({success: true});
 }
 
-
 function deleteWorld(sheet, data) {
   var world = data.world || "";
   if (!world) {
@@ -201,7 +197,6 @@ function deleteWorld(sheet, data) {
     return jsonResponse({success: false, error: "world not found"});
   }
 
-  // ステータスがオンラインなら削除不可
   var status = sheet.getRange(row, 2).getValue();
   if (status === "online") {
     return jsonResponse({success: false, error: "cannot delete online world"});

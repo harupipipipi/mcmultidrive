@@ -13,7 +13,7 @@ echo.
 
 if not exist "dist\release" mkdir "dist\release"
 copy dist\MCMultiDrive.exe dist\release\
-copy shared_config.json dist\release\
+if exist shared_config.json copy shared_config.json dist\release\
 if not exist "dist\release\rclone" mkdir "dist\release\rclone"
 if exist "rclone\rclone.exe" copy rclone\rclone.exe dist\release\rclone\
 if exist "rclone.conf" copy rclone.conf dist\release\

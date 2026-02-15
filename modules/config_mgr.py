@@ -1,4 +1,4 @@
-"""config_mgr.py - 複数ワールド対応の設定管理"""
+"""config_mgr.py - multi-world config management"""
 
 import json
 import os
@@ -16,23 +16,23 @@ def _find_base() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-# ── shared_config.json (全員共通) ─────────────────
+# -- shared_config.json --
 
 def load_shared(base: str = None) -> dict:
     if base is None:
         base = _find_base()
     path = os.path.join(base, "shared_config.json")
     if not os.path.exists(path):
-        raise FileNotFoundError(f"shared_config.json が見つかりません: {path}")
+        raise FileNotFoundError(f"shared_config.json not found: {path}")
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     missing = [k for k in SHARED_FIELDS if k not in data]
     if missing:
-        raise ValueError(f"shared_config.json にフィールドがありません: {', '.join(missing)}")
+        raise ValueError(f"shared_config.json missing fields: {', '.join(missing)}")
     return data
 
 
-# ── my_settings.json (個人設定) ───────────────────
+# -- my_settings.json --
 
 def load_personal(base: str = None) -> dict | None:
     if base is None:
@@ -85,7 +85,7 @@ def get_instance_path(world_name: str, base: str = None) -> str | None:
     return personal.get("instance_paths", {}).get(world_name)
 
 
-# ── 統合 config 生成 ──────────────────────────────
+# -- build merged config --
 
 def build_config(world_name: str, base: str = None) -> dict | None:
     if base is None:

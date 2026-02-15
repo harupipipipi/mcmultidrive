@@ -1,0 +1,7 @@
+{
+  "gas_url": "https://script.google.com/macros/s/YOUR_GAS_DEPLOYMENT_ID/exec",
+  "rclone_remote_name": "gdrive",
+  "rclone_drive_folder_id": "YOUR_GOOGLE_DRIVE_FOLDER_ID",
+  "backup_generations": 5,
+  "lock_timeout_hours": 8
+}

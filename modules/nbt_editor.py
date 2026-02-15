@@ -1,4 +1,4 @@
-"""nbt_editor.py - level.dat / servers.dat NBT編集"""
+"""nbt_editor.py - level.dat / servers.dat NBT editor"""
 
 import os
 import shutil
@@ -10,7 +10,7 @@ from nbtlib.tag import Compound, List, String, Byte
 def fix_level_dat(world_path: str) -> bool:
     level_dat_path = os.path.join(world_path, "level.dat")
     if not os.path.isfile(level_dat_path):
-        print("[情報] level.dat が見つかりません（新規ワールドの可能性）。")
+        print("[info] level.dat not found (may be new world).")
         return True
     try:
         backup_path = level_dat_path + ".bak"
@@ -21,14 +21,14 @@ def fix_level_dat(world_path: str) -> bool:
             if "Player" in data:
                 del data["Player"]
                 nbt_file.save()
-                print("[NBT] level.dat から Player タグを削除しました。")
+                print("[nbt] removed Player tag from level.dat.")
             else:
-                print("[NBT] Player タグは存在しません（削除不要）。")
+                print("[nbt] Player tag not present (no action needed).")
         else:
-            print("[警告] level.dat に Data タグが見つかりません。")
+            print("[warning] Data tag not found in level.dat.")
         return True
     except Exception as e:
-        print(f"[エラー] level.dat の編集に失敗しました: {e}")
+        print(f"[error] level.dat edit failed: {e}")
         return False
 
 
@@ -66,8 +66,8 @@ def update_servers_dat(instance_path: str, server_ip: str,
 
         servers.insert(0, new_entry)
         nbt_file.save(servers_dat_path, gzipped=False)
-        print(f"[NBT] servers.dat を更新しました: {server_name} → {server_ip}")
+        print(f"[nbt] servers.dat updated: {server_name} -> {server_ip}")
         return True
     except Exception as e:
-        print(f"[エラー] servers.dat の編集に失敗しました: {e}")
+        print(f"[error] servers.dat edit failed: {e}")
         return False

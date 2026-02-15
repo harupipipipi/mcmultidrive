@@ -1,4 +1,4 @@
-"""status_mgr.py - GAS経由ステータス管理（複数ワールド対応）"""
+"""status_mgr.py - GAS status management (multi-world)"""
 
 import json
 from datetime import datetime, timezone
@@ -12,7 +12,7 @@ def _get(gas_url: str, params: dict) -> dict:
         resp.raise_for_status()
         return json.loads(resp.text)
     except Exception as e:
-        print(f"[エラー] GAS GET 失敗: {e}")
+        print(f"[error] GAS GET failed: {e}")
         return {"error": str(e)}
 
 
@@ -24,11 +24,11 @@ def _post(gas_url: str, payload: dict) -> dict:
         resp.raise_for_status()
         return json.loads(resp.text)
     except Exception as e:
-        print(f"[エラー] GAS POST 失敗: {e}")
+        print(f"[error] GAS POST failed: {e}")
         return {"success": False, "error": str(e)}
 
 
-# ── 読み取り系 ─────────────────────────────────────
+# -- read --
 
 def list_worlds(gas_url: str) -> list[dict]:
     data = _get(gas_url, {"action": "list_worlds"})
@@ -40,7 +40,7 @@ def get_status(gas_url: str, world_name: str) -> dict:
     return data
 
 
-# ── 書き込み系 ─────────────────────────────────────
+# -- write --
 
 def set_online(gas_url: str, world_name: str, player_name: str,
                domain: str = "preparing...") -> bool:
@@ -54,7 +54,7 @@ def set_online(gas_url: str, world_name: str, player_name: str,
     if data.get("success") and data.get("current_host") == player_name:
         return True
     if data.get("current_host") and data.get("current_host") != player_name:
-        print(f"[情報] {data['current_host']} が先にホストを開始しました。")
+        print(f"[info] {data['current_host']} is already hosting.")
     return False
 
 
@@ -76,7 +76,14 @@ def add_world(gas_url: str, world_name: str) -> bool:
     return data.get("success", False)
 
 
-# ── ロック判定 ──────────────────────────────────────
+def delete_world(gas_url: str, world_name: str) -> bool:
+    """Delete world from GAS status sheet"""
+    payload = {"action": "delete_world", "world": world_name}
+    data = _post(gas_url, payload)
+    return data.get("success", False)
+
+
+# -- lock --
 
 def is_lock_expired(lock_timestamp: str, timeout_hours: int) -> bool:
     if not lock_timestamp:
@@ -91,10 +98,3 @@ def is_lock_expired(lock_timestamp: str, timeout_hours: int) -> bool:
         return elapsed_hours > timeout_hours
     except (ValueError, TypeError):
         return True
-
-
-def delete_world(gas_url: str, world_name: str) -> bool:
-    """ワールドをGASから削除（ステータスシートから行を消す）"""
-    payload = {"action": "delete_world", "world": world_name}
-    data = _post(gas_url, payload)
-    return data.get("success", False)
