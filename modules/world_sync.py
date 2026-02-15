@@ -1,4 +1,4 @@
-"""world_sync.py - rclone world sync (multi-world)"""
+"""world_sync.py - rcloneワールド同期（マルチワールド）"""
 
 import os
 import subprocess
@@ -19,7 +19,7 @@ def _run_rclone(config: dict, args: list[str],
     if show_progress:
         cmd.append("--progress")
 
-    print(f"[rclone] running: {' '.join(cmd)}")
+    print(f"[rclone] 実行中: {' '.join(cmd)}")
 
     try:
         result = subprocess.run(
@@ -28,14 +28,14 @@ def _run_rclone(config: dict, args: list[str],
         )
         if result.returncode != 0:
             if not show_progress and result.stderr:
-                print(f"[rclone error] {result.stderr.strip()}")
+                print(f"[rcloneエラー] {result.stderr.strip()}")
             return False
         return True
     except FileNotFoundError:
-        print(f"[error] rclone not found: {rclone_exe}")
+        print(f"[エラー] rcloneが見つかりません: {rclone_exe}")
         return False
     except Exception as e:
-        print(f"[error] rclone error: {e}")
+        print(f"[エラー] rcloneエラー: {e}")
         return False
 
 
@@ -71,7 +71,7 @@ def download_world(config: dict) -> bool:
     os.makedirs(local_path, exist_ok=True)
     remote_path = f"{remote_name}:worlds/{world_name}"
 
-    print(f"\n[sync] downloading: Drive -> {local_path}")
+    print(f"\n[同期] ダウンロード中: Drive → {local_path}")
     return _run_rclone(config, ["sync", remote_path, local_path])
 
 
@@ -82,11 +82,11 @@ def upload_world(config: dict) -> bool:
 
     local_path = os.path.join(instance_path, "saves", world_name)
     if not os.path.isdir(local_path):
-        print(f"[error] world folder not found: {local_path}")
+        print(f"[エラー] ワールドフォルダが見つかりません: {local_path}")
         return False
     remote_path = f"{remote_name}:worlds/{world_name}"
 
-    print(f"\n[sync] uploading: {local_path} -> Drive")
+    print(f"\n[同期] アップロード中: {local_path} → Drive")
     return _run_rclone(config, ["sync", local_path, remote_path])
 
 
@@ -99,10 +99,10 @@ def create_backup(config: dict) -> bool:
     src = f"{remote_name}:worlds/{world_name}"
     dst = f"{remote_name}:backups/{world_name}/{timestamp}"
 
-    print(f"\n[backup] creating: backups/{world_name}/{timestamp}")
+    print(f"\n[バックアップ] 作成中: backups/{world_name}/{timestamp}")
     success = _run_rclone(config, ["copy", src, dst], show_progress=False)
     if not success:
-        print("[warning] backup creation failed.")
+        print("[警告] バックアップの作成に失敗しました。")
         return False
     _cleanup_old_backups(config, backup_generations)
     return True
@@ -136,7 +136,7 @@ def _cleanup_old_backups(config: dict, max_generations: int) -> None:
             return
         dirs_to_delete = dirs[: len(dirs) - max_generations]
         for d in dirs_to_delete:
-            print(f"[backup] deleting old: backups/{world_name}/{d}")
+            print(f"[バックアップ] 古いバックアップを削除: backups/{world_name}/{d}")
             delete_cmd = [
                 rclone_exe, "purge",
                 f"{remote_name}:backups/{world_name}/{d}",
@@ -148,11 +148,11 @@ def _cleanup_old_backups(config: dict, max_generations: int) -> None:
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
             )
     except Exception as e:
-        print(f"[warning] backup cleanup failed: {e}")
+        print(f"[警告] バックアップのクリーンアップに失敗しました: {e}")
 
 
 def archive_world(config: dict) -> bool:
-    """Move world from worlds/ to backups/{world}_archived_{timestamp}/"""
+    """ワールドをworlds/からbackups/{world}_archived_{timestamp}/に移動"""
     remote_name = config["rclone_remote_name"]
     world_name = config["world_name"]
 
@@ -160,17 +160,17 @@ def archive_world(config: dict) -> bool:
     src = f"{remote_name}:worlds/{world_name}"
     dst = f"{remote_name}:backups/{world_name}_archived_{timestamp}"
 
-    print(f"\n[archive] {world_name} -> backups/{world_name}_archived_{timestamp}")
+    print(f"\n[アーカイブ] {world_name} → backups/{world_name}_archived_{timestamp}")
 
     success = _run_rclone(config, ["copy", src, dst], show_progress=False)
     if not success:
-        print("[error] archive copy failed.")
+        print("[エラー] アーカイブのコピーに失敗しました。")
         return False
 
     success = _run_rclone(config, ["purge", src], show_progress=False)
     if not success:
-        print("[warning] original data deletion failed (backup was created).")
+        print("[警告] 元データの削除に失敗しました（バックアップは作成済み）。")
         return False
 
-    print(f"[archive] done: {world_name}")
+    print(f"[アーカイブ] 完了: {world_name}")
     return True

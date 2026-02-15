@@ -1,4 +1,4 @@
-"""status_mgr.py - GAS status management (multi-world)"""
+"""status_mgr.py - GASステータス管理（マルチワールド）"""
 
 import json
 from datetime import datetime, timezone
@@ -12,7 +12,7 @@ def _get(gas_url: str, params: dict) -> dict:
         resp.raise_for_status()
         return json.loads(resp.text)
     except Exception as e:
-        print(f"[error] GAS GET failed: {e}")
+        print(f"[エラー] GAS GETリクエスト失敗: {e}")
         return {"error": str(e)}
 
 
@@ -24,11 +24,11 @@ def _post(gas_url: str, payload: dict) -> dict:
         resp.raise_for_status()
         return json.loads(resp.text)
     except Exception as e:
-        print(f"[error] GAS POST failed: {e}")
+        print(f"[エラー] GAS POSTリクエスト失敗: {e}")
         return {"success": False, "error": str(e)}
 
 
-# -- read --
+# -- 読み取り --
 
 def list_worlds(gas_url: str) -> list[dict]:
     data = _get(gas_url, {"action": "list_worlds"})
@@ -40,7 +40,7 @@ def get_status(gas_url: str, world_name: str) -> dict:
     return data
 
 
-# -- write --
+# -- 書き込み --
 
 def set_online(gas_url: str, world_name: str, player_name: str,
                domain: str = "preparing...") -> bool:
@@ -54,7 +54,7 @@ def set_online(gas_url: str, world_name: str, player_name: str,
     if data.get("success") and data.get("current_host") == player_name:
         return True
     if data.get("current_host") and data.get("current_host") != player_name:
-        print(f"[info] {data['current_host']} is already hosting.")
+        print(f"[情報] {data['current_host']} が既にホスト中です。")
     return False
 
 
@@ -77,13 +77,13 @@ def add_world(gas_url: str, world_name: str) -> bool:
 
 
 def delete_world(gas_url: str, world_name: str) -> bool:
-    """Delete world from GAS status sheet"""
+    """GASステータスシートからワールドを削除"""
     payload = {"action": "delete_world", "world": world_name}
     data = _post(gas_url, payload)
     return data.get("success", False)
 
 
-# -- lock --
+# -- ロック --
 
 def is_lock_expired(lock_timestamp: str, timeout_hours: int) -> bool:
     if not lock_timestamp:

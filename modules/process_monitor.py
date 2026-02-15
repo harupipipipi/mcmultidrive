@@ -1,4 +1,4 @@
-"""process_monitor.py - Minecraft process detection"""
+"""process_monitor.py - Minecraftプロセス検出"""
 
 import time
 
@@ -32,7 +32,7 @@ def find_minecraft_process() -> int | None:
                     psutil.ZombieProcess):
                 continue
     except Exception as e:
-        print(f"[warning] process search error: {e}")
+        print(f"[警告] プロセス検索エラー: {e}")
     return None
 
 
@@ -42,15 +42,15 @@ def wait_for_minecraft_start(timeout_seconds: int = 300,
     while time.time() - start_time < timeout_seconds:
         pid = find_minecraft_process()
         if pid is not None:
-            print(f"[process] Minecraft detected (PID: {pid})")
+            print(f"[プロセス] Minecraft検出 (PID: {pid})")
             return pid
         time.sleep(poll_interval)
-    print("[error] Minecraft process not detected (timeout).")
+    print("[エラー] Minecraftプロセスが検出されませんでした（タイムアウト）。")
     return None
 
 
 def wait_for_exit(pid: int, poll_interval: float = 3.0) -> None:
-    print(f"[process] waiting for Minecraft to exit (PID: {pid})...")
+    print(f"[プロセス] Minecraftの終了を待機中 (PID: {pid})...")
     while True:
         try:
             proc = psutil.Process(pid)
@@ -59,6 +59,6 @@ def wait_for_exit(pid: int, poll_interval: float = 3.0) -> None:
         except psutil.NoSuchProcess:
             break
         time.sleep(poll_interval)
-    print("[process] Minecraft exited.")
-    print("[process] waiting for file write (3s)...")
+    print("[プロセス] Minecraftが終了しました。")
+    print("[プロセス] ファイル書き込みを待機中 (3秒)...")
     time.sleep(3)

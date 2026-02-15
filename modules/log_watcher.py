@@ -1,10 +1,10 @@
-"""log_watcher.py - latest.log watcher (e4mc domain detection)"""
+"""log_watcher.py - latest.log監視（e4mcドメイン検出）"""
 
 import os
 import re
 import time
 
-# e4mc domain detection patterns (priority order)
+# e4mcドメイン検出パターン（優先順位順）
 E4MC_DOMAIN_PATTERNS = [
     re.compile(r"Domain assigned:\s*([\w.-]+\.e4mc\.link)"),
     re.compile(r"Local game hosted on domain \[([\w.-]+\.e4mc\.link)\]"),
@@ -15,14 +15,14 @@ E4MC_DOMAIN_PATTERNS = [
 def watch_for_domain(log_path: str, timeout_seconds: int = 600) -> str | None:
     start_time = time.time()
 
-    print("[log] waiting for latest.log...")
+    print("[ログ] latest.logを待機中...")
     while not os.path.isfile(log_path):
         if time.time() - start_time > timeout_seconds:
-            print(f"[error] latest.log not found: {log_path}")
+            print(f"[エラー] latest.logが見つかりません: {log_path}")
             return None
         time.sleep(1)
 
-    print("[log] latest.log found. watching for e4mc domain...")
+    print("[ログ] latest.logを検出。e4mcドメインを監視中...")
 
     try:
         initial_size = os.path.getsize(log_path)
@@ -34,7 +34,7 @@ def watch_for_domain(log_path: str, timeout_seconds: int = 600) -> str | None:
 
     while True:
         if time.time() - start_time > timeout_seconds:
-            print("[error] e4mc domain not detected (timeout).")
+            print("[エラー] e4mcドメインが検出されませんでした（タイムアウト）。")
             return None
 
         try:
@@ -65,7 +65,7 @@ def watch_for_domain(log_path: str, timeout_seconds: int = 600) -> str | None:
                     match = pattern.search(line)
                     if match:
                         domain = match.group(1)
-                        print(f"[log] e4mc domain detected: {domain}")
+                        print(f"[ログ] e4mcドメインを検出: {domain}")
                         return domain
 
         except OSError:
